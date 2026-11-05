@@ -1,0 +1,17 @@
+{
+  "name": "X360 Receiver",
+  "author": "TODO",
+  "flags": [
+    "root"
+  ],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "controller",
+      "battery",
+      "xbox"
+    ],
+    "description": "Akkustand, LEDs und Ausschalten für den Xbox 360 Wireless Gaming Receiver.",
+    "image": ""
+  }
+}

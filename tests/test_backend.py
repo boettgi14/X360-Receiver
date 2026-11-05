@@ -1,0 +1,633 @@
+"""Smoke-Test für main.py mit einem Attrappen-Modul `decky` (kein echter Decky Loader)."""
+
+import asyncio
+import importlib.util
+import json
+import logging
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "py_modules"))
+
+
+class FakeUnit:
+    """Ersatz für x360w.poweroff_unit in main.py: nie echte Dateien unter /etc oder /var, nie echtes systemctl."""
+
+    def __init__(self):
+        self.calls = []
+        self.installed = False
+        self.install_result = {"ok": True}
+        self.uninstall_result = {"ok": True, "errors": []}
+        self.last_run = None
+
+    def install(self, package_dir):
+        self.calls.append(("install", Path(package_dir).name))
+        if self.install_result.get("ok"):
+            self.installed = True
+        return self.install_result
+
+    def uninstall(self, *args):
+        self.calls.append(("uninstall",))
+        self.installed = False
+        return self.uninstall_result
+
+    def is_installed(self):
+        return self.installed
+
+    def read_last_run(self):
+        return self.last_run
+
+    def summarize(self, *args, **kwargs):
+        import x360w.poweroff_unit
+
+        return x360w.poweroff_unit.summarize(*args, **kwargs)
+
+
+def load_main(settings_dir, **attrs):
+    import x360w.service
+
+    x360w.service.ensure_usbmon = lambda template: None  # nie echtes modprobe in Tests
+    stub = types.ModuleType("decky")
+    stub.logger = logging.getLogger("decky-stub")
+    stub.DECKY_SETTINGS_DIR = settings_dir
+    for key, value in attrs.items():
+        setattr(stub, key, value)
+    sys.modules["decky"] = stub
+    spec = importlib.util.spec_from_file_location("x360w_main", ROOT / "main.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.poweroff_unit = module.fake_unit = FakeUnit()  # nur in main.py ersetzt, das echte Modul bleibt unberührt
+    return module
+
+
+class BackendTests(unittest.TestCase):
+    def test_lifecycle_and_actions(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            main.REFRESH_INTERVAL_S = 0.05
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                status = await plugin.get_status()
+                self.assertEqual(
+                    set(status),
+                    {"settings", "monitor", "receivers", "led_modes", "diagnostics"},
+                )
+                self.assertEqual(set(status["settings"]), {"monitor_enabled", "auto_poweroff", "poweroff_on_shutdown"})
+                self.assertFalse(status["settings"]["poweroff_on_shutdown"])
+                self.assertFalse(status["monitor"]["enabled"])
+                self.assertEqual(len(status["led_modes"]), 16)
+                json.dumps(status)  # muss serialisierbar sein
+
+                self.assertFalse((await plugin.set_led("../x", 1))["ok"])
+                self.assertFalse((await plugin.set_led("xpad0", 99))["ok"])
+                self.assertFalse((await plugin.set_auto_poweroff("ja"))["ok"])
+                self.assertFalse((await plugin.set_monitor_enabled("ja"))["ok"])
+
+                self.assertTrue((await plugin.set_monitor_enabled(True))["ok"])
+                self.assertTrue((await plugin.get_status())["monitor"]["enabled"])
+                saved = json.loads((Path(tmp) / "x360w.json").read_text())
+                self.assertIs(saved["monitor_enabled"], True)
+                await asyncio.sleep(0.2)  # Aktualisierungsschleife läuft
+                self.assertTrue((await plugin.set_monitor_enabled(False))["ok"])
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_slot_actions_validate_target_before_touching_usb(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            calls = []
+            patches = [
+                mock.patch.object(main.actions, "query_battery",
+                                  lambda *a: calls.append(("q",) + a) or {"ok": True, "state": None}),
+                mock.patch.object(main.actions, "power_off",
+                                  lambda *a: calls.append(("p",) + a) or {"ok": True, "confirmed": True}),
+            ]
+            for patch in patches:
+                patch.start()
+                self.addCleanup(patch.stop)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                # in dieser Umgebung gibt es keinen Receiver: nichts darf an USB gehen
+                self.assertEqual((await plugin.query_battery(1, 2, 0))["error"], "Receiver nicht gefunden")
+                self.assertEqual((await plugin.power_off(1, 2, 7))["error"], "Slot muss 1 bis 4 sein")
+                self.assertEqual((await plugin.power_off("1", 2, 0))["error"], "Ungültige Angabe")
+                self.assertEqual((await plugin.power_off(True, 2, 0))["error"], "Ungültige Angabe")
+                self.assertEqual(calls, [])
+
+                from x360w.discovery import ReceiverInfo
+                info = ReceiverInfo("1-3", 0x045E, 0x0719, "R", 1, 2, None, None, None, None)
+                plugin.service._find = lambda: [info]
+                self.assertTrue((await plugin.query_battery(1, 2, 1))["ok"])
+                self.assertTrue((await plugin.power_off(1, 2, 3))["confirmed"])
+                self.assertEqual(calls, [("q", 1, 2, 1), ("p", 1, 2, 3)])
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_enabled_setting_is_restored(self):
+        async def scenario(tmp):
+            (Path(tmp) / "x360w.json").write_text('{"monitor_enabled": true}')
+            main = load_main(tmp)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                self.assertTrue(plugin.service.status()["enabled"])
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+
+class OptionsAndViewTests(unittest.TestCase):
+    def test_status_lists_controllers_per_receiver(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            from x360w.discovery import ReceiverInfo
+            info = ReceiverInfo("1-3", 0x045E, 0x0719, "R", 1, 2, None, None, None, None)
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0, 2}):
+                plugin = main.Plugin()
+                await plugin._main()
+                try:
+                    plugin.service._find = lambda: [info]
+                    status = await plugin.get_status()
+                finally:
+                    await plugin._unload()
+            [receiver] = status["receivers"]
+            self.assertEqual([c["slot"] for c in receiver["controllers"]], [0, 2])
+            json.dumps(status)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_standby_option_is_saved_and_reapplied_after_restart(self):
+        async def scenario(tmp):
+            param = Path(tmp) / "auto_poweroff"
+            param.write_text("Y\n")
+            main = load_main(tmp)
+            with mock.patch.object(main.controls, "AUTO_POWEROFF_PARAM", param):
+                plugin = main.Plugin()
+                await plugin._main()
+                self.assertTrue((await plugin.set_auto_poweroff(False))["ok"])
+                self.assertEqual(param.read_text().strip(), "N")
+                await plugin._unload()
+
+                param.write_text("Y\n")  # Neustart: Kernelparameter steht wieder auf dem Standard
+                plugin = main.Plugin()
+                await plugin._main()
+                try:
+                    self.assertEqual(param.read_text().strip(), "N")  # gespeicherte Wahl wieder angewendet
+                    self.assertIs((await plugin.get_status())["settings"]["auto_poweroff"], False)
+                finally:
+                    await plugin._unload()
+            saved = json.loads((Path(tmp) / "x360w.json").read_text())
+            self.assertIs(saved["auto_poweroff"], False)
+            self.assertIs(saved["original_auto_poweroff"], True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_shutdown_option_validation_and_persistence(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                self.assertFalse((await plugin.set_poweroff_on_shutdown("ja"))["ok"])
+                self.assertFalse((await plugin.set_poweroff_on_shutdown(1))["ok"])
+                self.assertTrue((await plugin.set_poweroff_on_shutdown(True))["ok"])
+                self.assertTrue((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
+            finally:
+                await plugin._unload()
+            self.assertIs(json.loads((Path(tmp) / "x360w.json").read_text())["poweroff_on_shutdown"], True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_power_off_all_uses_confirmed_path_and_skips_when_nothing_connected(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            seen = []
+            with mock.patch.object(main.actions, "power_off",
+                                   lambda b, d, s: seen.append((b, d, s)) or {"ok": True, "confirmed": True}):
+                plugin = main.Plugin()
+                await plugin._main()
+                try:
+                    plugin._all_targets = lambda: []
+                    self.assertEqual(await plugin.power_off_all(), {"ok": True, "sent": 0, "confirmed": 0, "errors": []})
+                    self.assertEqual(seen, [])
+                    plugin._all_targets = lambda: [(1, 2, 0), (1, 2, 1)]
+                    result = await plugin.power_off_all()
+                finally:
+                    await plugin._unload()
+            self.assertEqual(seen, [(1, 2, 0), (1, 2, 1)])
+            self.assertEqual((result["sent"], result["confirmed"]), (2, 2))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+
+class StartupBatteryTests(unittest.TestCase):
+    STATE = {"battery_level": 2, "battery_type_raw": 1, "power_state_raw": 2, "vibration_level": 0}
+
+    def _run(self, slots, query, monitor_enabled=False, delay=0.0, after=None):
+        """Startet das Plugin mit Attrappen; gibt (Aufrufe, Status nach dem Start) zurück."""
+        calls = []
+        result = {}
+
+        async def scenario(tmp):
+            if monitor_enabled:
+                (Path(tmp) / "x360w.json").write_text('{"monitor_enabled": true}')
+            main = load_main(tmp)
+            main.STARTUP_QUERY_DELAY_S = delay
+            main.QUERY_BUSY_WAIT_S = 0.0
+            from x360w.discovery import ReceiverInfo
+            info = ReceiverInfo("1-3", 0x045E, 0x0719, "R", 1, 2, None, None, None, None)
+
+            def fake_query(bus, devnum, slot):
+                calls.append((bus, devnum, slot))
+                return query(len(calls))
+
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: set(slots)), \
+                    mock.patch.object(main.actions, "query_battery", fake_query), \
+                    mock.patch.object(main.discovery, "find_receivers", lambda: [info]):
+                plugin = main.Plugin()
+                # Dienst findet unseren Attrappen-Receiver
+                orig_init = main.MonitorService.__init__
+                main.MonitorService.__init__ = lambda self, *a, **k: (orig_init(self, find=lambda: [info], *a, **k))
+                try:
+                    await plugin._main()
+                finally:
+                    main.MonitorService.__init__ = orig_init
+                try:
+                    if after is None:
+                        await plugin.startup_task
+                    else:
+                        await after(plugin)
+                    result["status"] = await plugin.get_status()
+                finally:
+                    await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+        return calls, result["status"]
+
+    def test_connected_controllers_are_queried_once_after_start(self):
+        calls, status = self._run({0, 2}, lambda n: {"ok": True, "state": dict(self.STATE, battery_level=n)})
+        self.assertEqual(calls, [(1, 2, 0), (1, 2, 2)])  # nacheinander, jeder genau einmal
+        levels = {c["slot"]: (c["battery_level"], c["state_source"]) for c in status["receivers"][0]["controllers"]}
+        self.assertEqual(levels, {0: (1, "query"), 2: (2, "query")})  # auch ohne Monitor sichtbar
+
+    def test_no_controller_no_query(self):
+        calls, status = self._run(set(), lambda n: {"ok": True, "state": self.STATE})
+        self.assertEqual(calls, [])
+        self.assertEqual(status["receivers"][0]["controllers"], [])
+
+    def test_no_answer_leaves_value_unknown_and_continues(self):
+        calls, status = self._run({0, 1}, lambda n: {"ok": True, "state": None} if n == 1 else {"ok": True, "state": self.STATE})
+        self.assertEqual(calls, [(1, 2, 0), (1, 2, 1)])
+        levels = {c["slot"]: c["battery_level"] for c in status["receivers"][0]["controllers"]}
+        self.assertEqual(levels, {0: None, 1: 2})
+
+    def test_error_in_one_query_does_not_stop_the_others(self):
+        calls, status = self._run({0, 1}, lambda n: {"ok": False, "error": "libusb nicht ladbar"} if n == 1 else {"ok": True, "state": self.STATE})
+        self.assertEqual(len(calls), 2)
+
+    def test_exception_does_not_break_plugin(self):
+        def boom(n):
+            raise RuntimeError("kaputt")
+
+        calls, status = self._run({0}, boom)
+        self.assertEqual(calls, [(1, 2, 0)])
+        self.assertIn("receivers", status)  # Plugin läuft weiter
+
+    def test_busy_receiver_is_retried(self):
+        from x360w import actions
+        answers = {1: {"ok": False, "error": actions.BUSY_ERROR}, 2: {"ok": False, "error": actions.BUSY_ERROR}}
+        calls, status = self._run({0}, lambda n: answers.get(n, {"ok": True, "state": self.STATE}))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(status["receivers"][0]["controllers"][0]["battery_level"], 2)
+
+    def test_unload_cancels_pending_startup_query(self):
+        async def cancel_before_it_runs(plugin):
+            self.assertFalse(plugin.startup_task.done())  # wartet noch in der Pause nach dem Start
+            await plugin._unload()  # Entladen, bevor die Pause vorbei ist
+            await asyncio.sleep(0)
+            self.assertTrue(plugin.startup_task.cancelled())
+
+        calls, _ = self._run({0}, lambda n: {"ok": True, "state": self.STATE}, delay=30.0, after=cancel_before_it_runs)
+        self.assertEqual(calls, [])
+
+    def test_manual_query_is_remembered_too(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            main.STARTUP_QUERY_DELAY_S = 0.0
+            from x360w.discovery import ReceiverInfo
+            info = ReceiverInfo("1-3", 0x045E, 0x0719, "R", 1, 2, None, None, None, None)
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {1}), \
+                    mock.patch.object(main.actions, "query_battery", lambda *a: {"ok": True, "state": self.STATE}):
+                plugin = main.Plugin()
+                await plugin._main()
+                try:
+                    await plugin.startup_task
+                    plugin.service._find = lambda: [info]
+                    self.assertTrue((await plugin.query_battery(1, 2, 1))["ok"])
+                    status = await plugin.get_status()
+                finally:
+                    await plugin._unload()
+            [controller] = status["receivers"][0]["controllers"]
+            self.assertEqual((controller["slot"], controller["battery_level"], controller["state_source"]), (1, 2, "query"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+
+class PoweroffServiceTests(unittest.TestCase):
+    """„Beim Herunterfahren ausschalten“ richtet den systemd-Dienst ein und entfernt ihn wieder."""
+
+    def _run(self, scenario, settings=None, prepare=None):
+        async def wrapper(tmp):
+            if settings is not None:
+                (Path(tmp) / "x360w.json").write_text(json.dumps(settings))
+            main = load_main(tmp)
+            if prepare is not None:
+                prepare(main.fake_unit)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                return await scenario(main, plugin, tmp)
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            return asyncio.run(wrapper(tmp))
+
+    def test_enabling_installs_the_service_from_the_plugin_package(self):
+        async def scenario(main, plugin, tmp):
+            self.assertEqual((await plugin.set_poweroff_on_shutdown(True)), {"ok": True})
+            self.assertEqual(main.fake_unit.calls, [("install", "x360w")])  # Quelle: py_modules/x360w
+            self.assertTrue((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
+            return json.loads((Path(tmp) / "x360w.json").read_text())["poweroff_on_shutdown"]
+
+        self.assertIs(self._run(scenario), True)
+
+    def test_failed_install_keeps_the_option_off_and_reports_the_error(self):
+        async def scenario(main, plugin, tmp):
+            main.fake_unit.install_result = {"ok": False, "error": "systemctl kaputt"}
+            result = await plugin.set_poweroff_on_shutdown(True)
+            self.assertFalse(result["ok"])
+            self.assertIn("systemctl kaputt", result["error"])
+            self.assertFalse((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
+            self.assertFalse((Path(tmp) / "x360w.json").exists() and
+                             json.loads((Path(tmp) / "x360w.json").read_text()).get("poweroff_on_shutdown"))
+
+        self._run(scenario)
+
+    def test_disabling_removes_the_service_and_saves_off(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            await plugin.set_poweroff_on_shutdown(True)
+            main.fake_unit.calls.clear()
+            self.assertEqual(await plugin.set_poweroff_on_shutdown(False), {"ok": True})
+            self.assertEqual(main.fake_unit.calls, [("uninstall",)])
+            return json.loads((Path(tmp) / "x360w.json").read_text())["poweroff_on_shutdown"]
+
+        self.assertIs(self._run(scenario), False)
+
+    def test_incomplete_removal_is_reported_but_option_is_off(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.set_poweroff_on_shutdown(True)
+            main.fake_unit.uninstall_result = {"ok": False, "errors": ["systemctl disable kaputt"]}
+            result = await plugin.set_poweroff_on_shutdown(False)
+            self.assertFalse(result["ok"])
+            self.assertIn("systemctl disable kaputt", result["error"])
+            self.assertFalse((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
+
+        self._run(scenario)
+
+    def test_invalid_values_touch_nothing(self):
+        async def scenario(main, plugin, tmp):
+            for bad in ("ja", 1, None):
+                self.assertFalse((await plugin.set_poweroff_on_shutdown(bad))["ok"])
+            self.assertEqual(main.fake_unit.calls, [])
+
+        self._run(scenario)
+
+    def test_start_with_option_on_installs_or_updates_the_service(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            return main.fake_unit.calls
+
+        self.assertEqual(self._run(scenario, {"poweroff_on_shutdown": True}), [("install", "x360w")])
+
+    def test_start_with_option_off_removes_a_leftover_service(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            return main.fake_unit.calls
+
+        self.assertEqual(self._run(scenario, {"poweroff_on_shutdown": False}, lambda u: setattr(u, "installed", True)),
+                         [("uninstall",)])
+        self.assertEqual(self._run(scenario, {}, lambda u: setattr(u, "installed", True)), [("uninstall",)])  # Standard: aus
+
+    def test_start_with_option_off_and_no_service_does_nothing(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            return main.fake_unit.calls
+
+        self.assertEqual(self._run(scenario, {"poweroff_on_shutdown": False}), [])
+
+    def test_failed_install_at_start_is_shown_in_diagnostics(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            return (await plugin.get_status())["diagnostics"]
+
+        diagnostics = self._run(scenario, {"poweroff_on_shutdown": True},
+                                lambda u: setattr(u, "install_result", {"ok": False, "error": "kein systemd"}))
+        self.assertIn("nicht eingerichtet", diagnostics["verdict"])
+        self.assertIn("kein systemd", diagnostics["verdict"])
+
+    def test_toggle_right_after_start_is_not_undone_by_the_start_sync(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.set_poweroff_on_shutdown(True)  # bevor der Abgleich beim Start gelaufen ist
+            await plugin.unit_task
+            self.assertTrue(main.fake_unit.installed)
+            self.assertNotIn(("uninstall",), main.fake_unit.calls)
+
+        self._run(scenario)
+
+    def test_exception_during_sync_does_not_break_the_plugin(self):
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            self.assertIn("RuntimeError", plugin.unit_error)
+
+        def boom(unit):
+            def install(package_dir):
+                raise RuntimeError("kaputt")
+            unit.install = install
+
+        self._run(scenario, {"poweroff_on_shutdown": True}, boom)
+
+    def test_status_shows_the_last_run_of_the_service(self):
+        run = {"at": 1000.0, "receivers": 1, "targets": [[1, 2, 0], [1, 2, 1]], "duration_s": 2.1,
+               "result": {"ok": True, "sent": 2, "confirmed": 2, "errors": []}, "error": None}
+
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            return (await plugin.get_status())["diagnostics"]
+
+        diagnostics = self._run(scenario, {"poweroff_on_shutdown": True},
+                                lambda u: (setattr(u, "last_run", run), setattr(u, "installed", True)))
+        self.assertIn("2 von 2 Controllern", diagnostics["verdict"])
+
+    def test_no_diagnostics_when_off_and_never_run(self):
+        async def scenario(main, plugin, tmp):
+            return (await plugin.get_status())["diagnostics"]
+
+        self.assertIsNone(self._run(scenario))
+
+    def test_unload_leaves_the_service_alone_and_never_powers_off(self):
+        # Das Plugin schaltet beim Entladen nichts aus: Das macht der Dienst, auch wenn Decky das Plugin beim
+        # Herunterfahren gar nicht ordentlich stoppt.
+        sent = []
+
+        async def scenario(main, plugin, tmp):
+            await plugin.unit_task
+            main.fake_unit.calls.clear()
+            with mock.patch.object(main.shutdown, "power_off_targets", lambda *a, **k: sent.append(a)):
+                await plugin._unload()
+            return main.fake_unit.calls
+
+        self.assertEqual(self._run(scenario, {"poweroff_on_shutdown": True}), [])
+        self.assertEqual(sent, [])
+
+    def test_unload_cancels_a_pending_sync(self):
+        async def scenario(main, plugin, tmp):
+            await plugin._unload()
+            await asyncio.sleep(0)
+            self.assertTrue(plugin.unit_task.done())
+
+        self._run(scenario, {"poweroff_on_shutdown": True})
+
+
+class UninstallTests(unittest.TestCase):
+    def _setup(self, tmp):
+        home = Path(tmp).resolve() / "homebrew"
+        dirs = {kind: home / kind / "X360 Receiver" for kind in ("settings", "data", "logs")}
+        for d in dirs.values():
+            d.mkdir(parents=True)
+            (d / "datei").write_text("x")
+        other = home / "settings" / "Anderes Plugin"
+        other.mkdir()
+        param = Path(tmp) / "auto_poweroff"
+        return home, dirs, other, param
+
+    def _load(self, home, dirs):
+        return load_main(
+            str(dirs["settings"]),
+            DECKY_HOME=str(home),
+            DECKY_PLUGIN_SETTINGS_DIR=str(dirs["settings"]),
+            DECKY_PLUGIN_RUNTIME_DIR=str(dirs["data"]),
+            DECKY_PLUGIN_LOG_DIR=str(dirs["logs"]),
+        )
+
+    def test_uninstall_restores_auto_poweroff_and_removes_own_dirs_only(self):
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            param.write_text("Y\n")
+            main = self._load(home, dirs)
+            main.controls.AUTO_POWEROFF_PARAM = param
+            plugin = main.Plugin()
+            await plugin._main()
+            self.assertTrue((await plugin.set_auto_poweroff(False))["ok"])
+            self.assertTrue((await plugin.set_auto_poweroff(True))["ok"])
+            self.assertTrue((await plugin.set_auto_poweroff(False))["ok"])
+            self.assertEqual(param.read_text().strip(), "N")
+            saved = json.loads((dirs["settings"] / "x360w.json").read_text())
+            self.assertIs(saved["original_auto_poweroff"], True)  # Wert vor der ersten Änderung
+
+            await plugin._unload()
+            await plugin._uninstall()
+            self.assertEqual(param.read_text().strip(), "Y")
+            for d in dirs.values():
+                self.assertFalse(d.exists(), d)
+            self.assertTrue(other.exists())  # fremdes Plugin unberührt
+            self.assertTrue(home.exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_uninstall_without_changes_touches_nothing_but_own_dirs(self):
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            param.write_text("N\n")
+            main = self._load(home, dirs)
+            main.controls.AUTO_POWEROFF_PARAM = param
+            plugin = main.Plugin()
+            await plugin._main()
+            await plugin._unload()
+            await plugin._uninstall()
+            self.assertEqual(param.read_text(), "N\n")  # nie geändert, also nicht angefasst
+            self.assertFalse(dirs["settings"].exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_uninstall_removes_the_service_even_if_the_option_is_off_and_survives_its_failure(self):
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            main = self._load(home, dirs)
+            plugin = main.Plugin()
+            await plugin._main()
+            await plugin._unload()
+            await plugin._uninstall()
+            self.assertEqual(main.fake_unit.calls, [("uninstall",)])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_failing_service_removal_does_not_block_folder_cleanup(self):
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            main = self._load(home, dirs)
+
+            def boom(*args):
+                raise RuntimeError("kaputt")
+
+            main.fake_unit.uninstall = boom
+            plugin = main.Plugin()
+            await plugin._main()
+            await plugin._unload()
+            await plugin._uninstall()
+            for d in dirs.values():
+                self.assertFalse(d.exists(), d)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_uninstall_survives_missing_dirs_and_missing_decky_home(self):
+        async def scenario(tmp):
+            main = load_main(tmp)  # Attrappe ohne DECKY_HOME und ohne Plugin-Verzeichnisse
+            plugin = main.Plugin()
+            await plugin._main()
+            await plugin._unload()
+            await plugin._uninstall()  # darf nicht werfen
+            self.assertTrue(Path(tmp).exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+
+if __name__ == "__main__":
+    unittest.main()

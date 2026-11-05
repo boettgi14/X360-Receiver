@@ -1,0 +1,13 @@
+# Build-Ausgabe und Abhängigkeiten
+node_modules/
+dist/
+*.zip
+*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+
+# Lokale Aufzeichnungen aus tools/ (können Geräte- und Busdaten enthalten)
+discover.txt
+capture*.log
