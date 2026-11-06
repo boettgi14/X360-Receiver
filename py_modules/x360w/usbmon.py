@@ -1,10 +1,10 @@
-"""Parser für das usbmon-Textformat (/sys/kernel/debug/usb/usbmon/<bus>u).
+"""Parser for the usbmon text format (/sys/kernel/debug/usb/usbmon/<bus>u).
 
-Zeilenformat laut Kernel-Dokumentation (Documentation/usb/usbmon.rst):
-  <urb-tag> <timestamp-us> <event S|C|E> <Xx:bus:dev:ep> <status[:interval]> <length> [= <daten-hex-wörter>]
+Line format according to the kernel documentation (Documentation/usb/usbmon.rst):
+  <urb-tag> <timestamp-us> <event S|C|E> <Xx:bus:dev:ep> <status[:interval]> <length> [= <data-hex-words>]
 
-Hinweis: Das Textformat zeigt nur einen begrenzten Datenanfang. Die Pakete des
-Receivers sind 28/29 Bytes lang. Ob alles ankommt, ist in Phase 0 zu prüfen.
+Note: The text format shows only a limited start of the data. The receiver's packets are 28/29
+bytes long. Whether everything arrives was to be checked in phase 0 (it does: confirmed on hardware).
 """
 
 from __future__ import annotations
@@ -17,9 +17,9 @@ from typing import Optional
 class UsbmonRecord:
     tag: str
     timestamp_us: int
-    event: str  # "S" Submit, "C" Complete, "E" Error
-    xfer_type: str  # "C" Control, "Z" Iso, "I" Interrupt, "B" Bulk
-    direction: str  # "i" oder "o"
+    event: str  # "S" submit, "C" complete, "E" error
+    xfer_type: str  # "C" control, "Z" isochronous, "I" interrupt, "B" bulk
+    direction: str  # "i" or "o"
     bus: int
     device: int
     endpoint: int
@@ -47,8 +47,8 @@ def parse_usbmon_line(line: str) -> Optional[UsbmonRecord]:
         bus = int(addr_parts[1])
         device = int(addr_parts[2])
         endpoint = int(addr_parts[3])
-        # Bei Control-Transfers steht an Stelle von <length> ein "s" (Setup).
-        # Solche Zeilen interessieren hier nicht.
+        # For control transfers an "s" (setup) stands in place of <length>.
+        # Such lines are of no interest here.
         data_length = int(length)
     except ValueError:
         return None

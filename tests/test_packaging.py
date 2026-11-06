@@ -1,4 +1,4 @@
-"""Tests für tools/make_zip.py: Aufbau der Decky-Zip."""
+"""Tests for tools/make_zip.py: layout of the Decky zip."""
 
 import importlib.util
 import json
@@ -18,7 +18,7 @@ def load_tool():
 
 
 BUILT = (ROOT / "dist" / "index.js").is_file()
-NEEDS_BUILD = unittest.skipUnless(BUILT, "Frontend nicht gebaut (npm run build)")
+NEEDS_BUILD = unittest.skipUnless(BUILT, "Frontend not built (npm run build)")
 
 
 class PackagingTests(unittest.TestCase):
@@ -41,7 +41,7 @@ class PackagingTests(unittest.TestCase):
 
     @NEEDS_BUILD
     def test_zip_contains_every_module_the_service_copies(self):
-        # Der Dienst kopiert diese Dateien aus dem installierten Plugin; fehlt eine, scheitert das Einschalten der Option.
+        # The service copies these files from the installed plugin; if one is missing, switching the option on fails.
         import sys
         sys.path.insert(0, str(ROOT / "py_modules"))
         from x360w import poweroff_unit
@@ -56,7 +56,7 @@ class PackagingTests(unittest.TestCase):
     def test_plugin_json_has_root_flag(self):
         flags = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))["flags"]
         self.assertIn("root", flags)
-        self.assertNotIn("_root", flags)  # "_root" (Vorlage) lässt Decky das Plugin ohne Root-Rechte starten
+        self.assertNotIn("_root", flags)  # "_root" (the template's placeholder) makes Decky start the plugin without root rights
 
 
 if __name__ == "__main__":

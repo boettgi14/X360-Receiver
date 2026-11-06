@@ -1,11 +1,14 @@
-"""Steuerung über die Kernel-Schnittstellen von xpad (sysfs). Kein Shell-Aufruf.
+"""Control through xpad's kernel interfaces (sysfs). No shell calls.
 
-Geschrieben wird ausschließlich in:
-  /sys/class/leds/xpadN/brightness           (N = Zahl; nur Namen der Form xpadN)
+Writes only to:
+  /sys/class/leds/xpadN/brightness           (N = number; only names of the form xpadN)
   /sys/module/xpad/parameters/auto_poweroff
 
-Die LED-Modi stammen aus den Kommentaren in drivers/input/joystick/xpad.c. Die LED xpadN
-existiert nur, solange ein Controller verbunden ist (am Gerät bestätigt).
+The LED modes come from the comments in drivers/input/joystick/xpad.c. The LED xpadN exists
+only while a controller is connected (confirmed on hardware).
+
+The mode descriptions here are English and language-neutral. The frontend shows its own
+translated names and uses these only as a fallback.
 """
 
 from __future__ import annotations
@@ -19,22 +22,22 @@ AUTO_POWEROFF_PARAM = Path("/sys/module/xpad/parameters/auto_poweroff")
 LED_NAME_RE = re.compile(r"xpad[0-9]{1,3}")
 
 LED_MODES: Dict[int, str] = {
-    0: "aus",
-    1: "alle blinken, dann vorheriger Zustand",
-    2: "Position 1 blinkt, dann an",
-    3: "Position 2 blinkt, dann an",
-    4: "Position 3 blinkt, dann an",
-    5: "Position 4 blinkt, dann an",
-    6: "Position 1 an",
-    7: "Position 2 an",
-    8: "Position 3 an",
-    9: "Position 4 an",
-    10: "rotierend",
-    11: "blinkend, nach vorherigem Zustand",
-    12: "langsam blinkend, nach vorherigem Zustand",
-    13: "rotierend mit zwei Lichtern",
-    14: "dauerhaft langsam alle blinkend",
-    15: "einmal blinken, dann vorheriger Zustand",
+    0: "off",
+    1: "all blinking, then previous state",
+    2: "position 1 blinking, then on",
+    3: "position 2 blinking, then on",
+    4: "position 3 blinking, then on",
+    5: "position 4 blinking, then on",
+    6: "position 1 on",
+    7: "position 2 on",
+    8: "position 3 on",
+    9: "position 4 on",
+    10: "rotating",
+    11: "blinking, based on previous state",
+    12: "slow blinking, based on previous state",
+    13: "rotating with two lights",
+    14: "all slowly blinking, permanently",
+    15: "blink once, then previous state",
 }
 
 
@@ -52,11 +55,11 @@ def list_leds(base: Optional[Path] = None) -> List[str]:
 
 
 def led_owner(name: str, base: Optional[Path] = None) -> Optional[str]:
-    """USB-Pfad des Receivers (z. B. "1-3"), dem die LED gehört.
+    """USB path of the receiver (e.g. "1-3") that owns the LED.
 
-    xpad registriert die LED am USB-Gerät des Receivers (`led_classdev_register(&xpad->udev->dev …)`),
-    der aufgelöste Pfad endet also auf `<usb_path>/leds/<name>`. Einem einzelnen Slot lässt sich die
-    LED so nicht zuordnen. Aus dem Quelltext abgeleitet, am Gerät nicht geprüft.
+    xpad registers the LED on the receiver's USB device (`led_classdev_register(&xpad->udev->dev …)`),
+    so the resolved path ends in `<usb_path>/leds/<name>`. This does not tie a LED to a single slot.
+    Derived from the source code, not checked on the device.
     """
     if not isinstance(name, str) or not LED_NAME_RE.fullmatch(name):
         return None
@@ -70,7 +73,7 @@ def led_owner(name: str, base: Optional[Path] = None) -> Optional[str]:
 
 
 def led_owners(base: Optional[Path] = None) -> Dict[str, List[str]]:
-    """LED-Namen je Receiver-USB-Pfad."""
+    """LED names per receiver USB path."""
     owners: Dict[str, List[str]] = {}
     for name in list_leds(base):
         owner = led_owner(name, base)
@@ -80,23 +83,23 @@ def led_owners(base: Optional[Path] = None) -> Dict[str, List[str]]:
 
 
 def default_led_mode(name: str) -> int:
-    """Was xpad nach dem Verbinden selbst setzt: (N mod 4) + 2."""
+    """What xpad itself sets after connecting: (N mod 4) + 2."""
     _check_name(name)
     return (_led_number(name) % 4) + 2
 
 
 def _check_name(name: str) -> None:
     if not isinstance(name, str) or not LED_NAME_RE.fullmatch(name):
-        raise ValueError(f"Ungültiger LED-Name: {name!r}")
+        raise ValueError(f"Invalid LED name: {name!r}")
 
 
 def set_led_mode(name: str, mode: int, base: Optional[Path] = None) -> None:
     _check_name(name)
     if isinstance(mode, bool) or not isinstance(mode, int) or not 0 <= mode <= 15:
-        raise ValueError(f"LED-Modus muss eine ganze Zahl von 0 bis 15 sein, nicht {mode!r}")
+        raise ValueError(f"LED mode must be an integer from 0 to 15, not {mode!r}")
     path = (base or LED_BASE) / name / "brightness"
     if not path.exists():
-        raise FileNotFoundError(f"{name} existiert nicht (Controller verbunden?)")
+        raise FileNotFoundError(f"{name} does not exist (controller connected?)")
     with open(path, "w", encoding="ascii") as handle:
         handle.write(f"{mode}\n")
 
@@ -119,7 +122,7 @@ def get_auto_poweroff(path: Optional[Path] = None) -> Optional[bool]:
 
 def set_auto_poweroff(enabled: bool, path: Optional[Path] = None) -> None:
     if not isinstance(enabled, bool):
-        raise ValueError("enabled muss True oder False sein")
+        raise ValueError("enabled must be True or False")
     target = path or AUTO_POWEROFF_PARAM
     with open(target, "w", encoding="ascii") as handle:
         handle.write("Y\n" if enabled else "N\n")

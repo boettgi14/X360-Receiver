@@ -1,4 +1,4 @@
-"""Tests für takeover.py mit Attrappen-Backend (ohne Hardware)."""
+"""Tests for takeover.py with a dummy backend (no hardware)."""
 
 import sys
 import unittest
@@ -93,7 +93,7 @@ class TakeoverTests(unittest.TestCase):
                 session.send(b"\x00\x00")
 
     def test_listen_decodes_and_stops(self):
-        link = bytes.fromhex("08" + "80") 
+        link = bytes.fromhex("08" + "80")
         backend = FakeBackend(replies=[link])
         with SlotSession(backend, 1, 2, 0, clock=Clock()) as session:
             session.send(build_status_request())
@@ -102,11 +102,24 @@ class TakeoverTests(unittest.TestCase):
         self.assertEqual(found[0][1], link)
         self.assertEqual(type(found[0][2]).__name__, "ConnectionEvent")
 
+    def test_usb_error_carries_an_optional_code_and_detail(self):
+        plain = UsbError("claim_interface: LIBUSB_ERROR_BUSY")
+        self.assertEqual((plain.code, plain.detail), (None, None))
+        coded = UsbError("text", "some_code", "why")
+        self.assertEqual((str(coded), coded.code, coded.detail), ("text", "some_code", "why"))
+
+    def test_missing_libusb_reports_a_translatable_code(self):
+        with self.assertRaises(UsbError) as caught:
+            LibusbBackend("/nonexistent/libusb-1.0.so.0")
+        self.assertEqual(caught.exception.code, "libusb_unavailable")
+        self.assertTrue(caught.exception.detail)  # the loader's reason
+        self.assertIn("libusb could not be loaded", str(caught.exception))
+
     def test_libusb_loads_and_reports_missing_device(self):
         try:
             backend = LibusbBackend()
         except UsbError:
-            self.skipTest("libusb nicht installiert")
+            self.skipTest("libusb not installed")
         try:
             with self.assertRaises(UsbError):
                 backend.open(250, 250)

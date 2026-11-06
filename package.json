@@ -1,7 +1,7 @@
 {
   "name": "x360-receiver",
   "version": "0.0.1",
-  "description": "Decky-Plugin für den Xbox 360 Wireless Gaming Receiver: Akkustand, LEDs und Ausschalten der Controller",
+  "description": "Decky plugin for the Xbox 360 Wireless Gaming Receiver: battery level, LEDs and turning off controllers",
   "type": "module",
   "scripts": {
     "build": "rollup -c",

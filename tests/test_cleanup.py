@@ -1,4 +1,4 @@
-"""Tests für x360w.cleanup: Löschen nur genau der eigenen Decky-Ordner."""
+"""Tests for x360w.cleanup: deleting exactly the plugin's own Decky folders and nothing else."""
 
 import os
 import sys
@@ -35,15 +35,15 @@ class RemovePluginDirTests(unittest.TestCase):
 
     def test_refuses_everything_else(self):
         (self.home / "other" / "P").mkdir(parents=True)
-        (self.home / "settings" / "P" / "tief").mkdir()
+        (self.home / "settings" / "P" / "deep").mkdir()
         cases = [
-            "", "relativ/pfad",
-            self.home,                                  # DECKY_HOME selbst
-            self.home / "settings",                     # Elternordner
-            self.home / "other" / "P",                  # unbekannte Art
-            self.home / "settings" / "P" / "tief",      # zu tief
-            self.home / "settings" / "fehlt",           # existiert nicht
-            self.home / "settings" / "..",              # normalisiert zu DECKY_HOME
+            "", "relative/path",
+            self.home,                                  # DECKY_HOME itself
+            self.home / "settings",                     # parent folder
+            self.home / "other" / "P",                  # unknown kind
+            self.home / "settings" / "P" / "deep",      # too deep
+            self.home / "settings" / "missing",           # does not exist
+            self.home / "settings" / "..",              # normalizes to DECKY_HOME
             Path("/"), Path("/etc"), Path("/home"),
         ]
         for case in cases:
@@ -52,8 +52,8 @@ class RemovePluginDirTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_dotdot_inside_path_is_normalized_not_trusted(self):
-        # Landet nach Normalisierung auf dem erlaubten Pfad, darf also gelöscht werden;
-        # ein Ausbruch aus DECKY_HOME wird dagegen abgewiesen.
+        # Ends up on the allowed path after normalization, so it may be deleted;
+        # an escape from DECKY_HOME is refused.
         self.assertTrue(self.remove(self.home / "settings" / "x" / ".." / "P"))
         (self.home / "settings" / "Q").mkdir()
         self.assertFalse(self.remove(self.home / "settings" / "Q" / ".." / ".." / ".." / "etc"))
@@ -64,7 +64,7 @@ class RemovePluginDirTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_refuses_symlink_as_plugin_dir(self):
-        target = Path(self._tmp.name).resolve() / "wichtig"
+        target = Path(self._tmp.name).resolve() / "important"
         target.mkdir()
         (self.home / "data").mkdir()
         os.symlink(target, self.home / "data" / "P")
@@ -72,14 +72,14 @@ class RemovePluginDirTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_refuses_symlinked_kind_directory(self):
-        target = Path(self._tmp.name).resolve() / "woanders"
+        target = Path(self._tmp.name).resolve() / "elsewhere"
         (target / "P").mkdir(parents=True)
         os.symlink(target, self.home / "logs")
         self.assertFalse(self.remove(self.home / "logs" / "P"))
         self.assertEqual(self.calls, [])
 
     def test_symlinked_decky_home_is_allowed(self):
-        # Bazzite: /home -> /var/home. DECKY_HOME darf über einen Symlink erreichbar sein.
+        # Bazzite: /home -> /var/home. DECKY_HOME may be reached through a symlink.
         link = Path(self._tmp.name).resolve() / "link"
         os.symlink(self.home, link)
         self.assertTrue(self.remove(link / "settings" / "P", home=link))

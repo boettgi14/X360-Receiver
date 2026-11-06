@@ -1,170 +1,170 @@
-# Protokoll des Xbox 360 Wireless Gaming Receivers
+# Protocol of the Xbox 360 Wireless Gaming Receiver
 
-Zusammenfassung der Recherche. Jede Aussage trägt einen Vertrauensgrad:
+Summary of the research. Every statement carries a confidence level:
 
-- **[Quelle]** direkt in einer Quelle gelesen (xpad.c, argon.md, xboxdrv PROTOCOL)
-- **[Probe]** durch Unit-Tests gegen Beispielpakete der Quellen bestätigt, aber nicht an echter Hardware
-- **[Hypothese]** Annahme, die auf Hardware geprüft werden muss (Phase 0)
+- **[Source]** read directly in a source (xpad.c, argon.md, xboxdrv PROTOCOL)
+- **[Unit-tested]** confirmed by unit tests against sample packets from the sources, but not on real hardware
+- **[Hypothesis]** assumption that has to be checked on hardware (phase 0)
 
-## 1. Gerät und Schnittstellen
+## 1. Device and interfaces
 
-- USB-IDs: 045E:0291 und 045E:0719 [Quelle: argon.md]. xpad kennt zusätzlich 045E:02A9 als „Unofficial“ [Quelle: xpad.c].
-- Ein Receiver hat 4 Slots. Je Slot gibt es eine Controller-Schnittstelle (Klasse 0xFF, Subklasse 0x5D, Protokoll 0x81) und eine Audio-Schnittstelle (Protokoll 0x82) [Quelle: argon.md].
-- Endpunkte: Controller 1 = IN 0x81 / OUT 0x01, Controller 2 = 0x83 / 0x03, Controller 3 = 0x85 / 0x05, Controller 4 = 0x87 / 0x07. Audio liegt jeweils auf dem geraden Endpunkt dazwischen [Quelle: argon.md].
-- „Slot“ bedeutet Verbindungsreihenfolge am Receiver, nicht die Spielernummer (LED) [Quelle: argon.md].
-- xpad bindet nur die Controller-Schnittstellen (Protokoll 129), nicht die Audio-Schnittstellen [Quelle: xpad.c, `XPAD_XBOX360_VENDOR_PROTOCOL(vend, 129)`].
-- Jedes IN-Paket ist typischerweise 28 oder 29 Bytes lang [Quelle: xboxdrv].
+- USB IDs: 045E:0291 and 045E:0719 [Source: argon.md]. xpad additionally knows 045E:02A9 as "Unofficial" [Source: xpad.c].
+- A receiver has 4 slots. Each slot has one controller interface (class 0xFF, subclass 0x5D, protocol 0x81) and one audio interface (protocol 0x82) [Source: argon.md].
+- Endpoints: controller 1 = IN 0x81 / OUT 0x01, controller 2 = 0x83 / 0x03, controller 3 = 0x85 / 0x05, controller 4 = 0x87 / 0x07. Audio sits on the even endpoint in between [Source: argon.md].
+- "Slot" means order of connection at the receiver, not the player number (LED) [Source: argon.md].
+- xpad binds only the controller interfaces (protocol 129), not the audio interfaces [Source: xpad.c, `XPAD_XBOX360_VENDOR_PROTOCOL(vend, 129)`].
+- Each IN packet is typically 28 or 29 bytes long [Source: xboxdrv].
 
-## 2. IN-Pakete (Receiver → Host)
+## 2. IN packets (receiver → host)
 
-Header (5 Bytes): `[0]` Paket-ID (0x00, bei Verbindung 0x08), `[1]` Typ, `[2]` unbenutzt (0x00), `[3..4]` Header-Daten.
+Header (5 bytes): `[0]` packet ID (0x00, 0x08 on connection), `[1]` type, `[2]` unused (0x00), `[3..4]` header data.
 
-| ID | Typ | Inhalt | Status |
-|----|-----|--------|--------|
-| 0x08 | Bits 0x80 / 0x40 im Typ-Byte | Verbindung: 0x80 = Controller da, 0x40 = Headset da. Zwei Bytes lang | Quelle, Probe |
-| 0x00 | 0x00 | **Status** in Header-Bytes 3–4, nur gültig wenn `byte3 & 0xF0 == 0x10` | Quelle, Probe |
-| 0x00 | 0x01 / 0x03 | Eingabedaten (Tasten, Trigger, Sticks) ab Offset 5 | Quelle |
-| 0x00 | 0x05 | Fähigkeiten (erstes Datenbyte 0x12) | Quelle |
-| 0x00 | 0x0F | **Link-Report**: Geräteinfo beim Verbinden (erstes Datenbyte 0xCC) | Quelle, Probe |
-| 0x00 | 0xF8 / 0xF9 | Unbekannt; erscheinen paarweise, auch nach Headset-Wechsel | Quelle (nur beobachtet) |
+| ID | Type | Content | Status |
+|----|------|---------|--------|
+| 0x08 | Bits 0x80 / 0x40 in the type byte | Connection: 0x80 = controller present, 0x40 = headset present. Two bytes long | Source, unit-tested |
+| 0x00 | 0x00 | **State** in header bytes 3–4, valid only if `byte3 & 0xF0 == 0x10` | Source, unit-tested |
+| 0x00 | 0x01 / 0x03 | Input data (buttons, triggers, sticks) from offset 5 | Source |
+| 0x00 | 0x05 | Capabilities (first data byte 0x12) | Source |
+| 0x00 | 0x0F | **Link report**: device info on connecting (first data byte 0xCC) | Source, unit-tested |
+| 0x00 | 0xF8 / 0xF9 | Unknown; appear in pairs, also after a headset change | Source (observed only) |
 
-### Statusfelder (Byte 3 und Byte 4)
+### State fields (byte 3 and byte 4)
 
 ```
-Byte 3:  bits 0-1 vibrationLevel   bit 2 headset   bit 3 chatpad   bits 4-7 Marker = 0x1
+Byte 3:  bits 0-1 vibrationLevel   bit 2 headset   bit 3 chatpad   bits 4-7 marker = 0x1
 Byte 4:  bit 0 unknown   bits 1-2 batteryType   bit 3 onlyMic   bits 4-5 powerState   bits 6-7 batteryLevel
 ```
 
-- Bitreihenfolge LSB-zuerst ist eine Annahme aus der C-Struct [Hypothese].
-- `batteryLevel` 0..3 entspricht den vier XInput-Stufen (leer, niedrig, mittel, voll) [Hypothese].
-- `batteryType` roh 0..3. Aus den Beispielen: 0xE0 = Typ 0 (xboxdrv-Autor vermutet „Charging?“), 0xE2 = Typ 1, 0xE6 = Typ 3. Welche Zahl Alkaline, NiMH-Pack oder „kabelgebunden/Play & Charge“ ist, ist **offen** [Hypothese]. Phase 0 klärt das mit AA-Batterien und Play-&-Charge-Pack.
-- `powerState` roh 0..3, Bedeutung unbekannt. In allen Beispielen 2.
+- The LSB-first bit order is an assumption from the C struct [Hypothesis].
+- `batteryLevel` 0..3 corresponds to the four XInput levels (empty, low, medium, full) [Hypothesis].
+- `batteryType` raw 0..3. From the examples: 0xE0 = type 0 (the xboxdrv author suspects "Charging?"), 0xE2 = type 1, 0xE6 = type 3. Which number is alkaline, NiMH pack or "wired/Play & Charge" is **open** [Hypothesis]. Phase 0 clears this up with AA batteries and a Play & Charge pack.
+- `powerState` raw 0..3, meaning unknown. 2 in all examples.
 
-### Link-Report (nach dem 5-Byte-Header, 24 Datenbytes)
+### Link report (after the 5-byte header, 24 data bytes)
 
-| Offset | Größe | Feld |
-|--------|-------|------|
-| 0 | 1 | immer 0xCC |
-| 1 | 4 | unbekannt |
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 1 | always 0xCC |
+| 1 | 4 | unknown |
 | 5 | 4 | deviceID |
 | 9 | 1 | type |
 | 10 | 1 | revision |
-| 11 | 2 | state (gleiches Format wie Statusbytes oben) |
+| 11 | 2 | state (same format as the state bytes above) |
 | 13 | 2 | protocol |
-| 15 | 2 | unbekannt |
+| 15 | 2 | unknown |
 | 17 | 3 | vendorIDData |
 | 20 | 1 | subtype |
-| 21 | 3 | unbekannt |
+| 21 | 3 | unknown |
 
-- Die Formel für die Hersteller-ID aus der Quelle liefert für das xboxdrv-Beispiel 0x50001, also keinen plausiblen Wert [Probe]. Rohbytes werden deshalb mit angezeigt, die Formel ist ungeprüft.
-- Subtypen (Gamepad, Lenkrad, Arcade-Stick, Flight-Stick, Tanzmatte, Gitarre, Gitarre alternativ, Schlagzeug, Bass, Arcade-Pad) stammen aus der XInput-Doku, die in dieser Session nicht geprüft wurde [Hypothese]. Ein Kernel-Patch-Entwurf (2026) benennt zumindest Gamepad, Wheel, Arcade Stick, Flight Stick, Dance Pad, Guitar und Alternate Guitar [Quelle: LKML-Patch, Vorschau].
+- The formula for the vendor ID from the source gives 0x50001 for the xboxdrv example, which is not a plausible value [Unit-tested]. The raw bytes are therefore shown as well; the formula is unchecked.
+- Subtypes (gamepad, wheel, arcade stick, flight stick, dance pad, guitar, alternate guitar, drum kit, bass, arcade pad) come from the XInput documentation, which was not checked in this session [Hypothesis]. A kernel patch draft (2026) names at least gamepad, wheel, arcade stick, flight stick, dance pad, guitar and alternate guitar [Source: LKML patch, preview].
+- The English names are in `x360w.protocol.SUBTYPE_NAMES`; the plugin UI shows translated names keyed by the subtype number (`src/i18n.ts`). The German names are translations of these English names, not taken from a source.
 
-## 3. OUT-Befehle (Host → Receiver), 12 Bytes, auf dem OUT-Endpunkt des Slots
+## 3. OUT commands (host → receiver), 12 bytes, on the slot's OUT endpoint
 
-| Befehl | Bytes | Status |
-|--------|-------|--------|
-| Status/Presence anfordern | `08 00 0F C0 00…` | Quelle (xpad.c nutzt das beim Start) |
-| Akkustatus anfordern | `00 00 00 40 00…` | Quelle (argon.md), nicht in xpad |
-| Fähigkeiten anfordern | `00 00 02 80 00…` | Quelle (argon.md) |
-| LED setzen | `00 00 08 (0x40 + Modus) 00…`, Modus 0–15 | Quelle (xpad.c, argon.md) |
-| **Controller ausschalten** | `00 00 08 C0 00…` | Quelle (xpad.c `xpad360w_poweroff_controller`, argon.md, xboxdrv) |
-| Rumble | `00 01 0F C0 00 groß klein 00…` | Quelle (xpad.c) |
-| Chatpad aktivieren | `00 00 0C 1B …` plus Keep-alive 0x1E/0x1F im Sekundentakt | Quelle (xboxdrv) |
+| Command | Bytes | Status |
+|---------|-------|--------|
+| Request status/presence | `08 00 0F C0 00…` | Source (xpad.c uses it on start) |
+| Request battery status | `00 00 00 40 00…` | Source (argon.md), not in xpad |
+| Request capabilities | `00 00 02 80 00…` | Source (argon.md) |
+| Set LED | `00 00 08 (0x40 + mode) 00…`, mode 0–15 | Source (xpad.c, argon.md) |
+| **Turn the controller off** | `00 00 08 C0 00…` | Source (xpad.c `xpad360w_poweroff_controller`, argon.md, xboxdrv) |
+| Rumble | `00 01 0F C0 00 large small 00…` | Source (xpad.c) |
+| Enable chatpad | `00 00 0C 1B …` plus keep-alive 0x1E/0x1F every second | Source (xboxdrv) |
 
-LED-Modi laut xpad.c: 0 aus, 1 alle blinken, 2–5 Position 1–4 blinkt dann an, 6–9 Position 1–4 an, 10 rotierend, 11 blinkend, 12 langsam blinkend, 13 rotierend mit zwei Lichtern, 14 dauerhaft langsam alle blinkend, 15 einmal blinken.
+LED modes according to xpad.c: 0 off, 1 all blink, 2–5 position 1–4 blinks then on, 6–9 position 1–4 on, 10 rotating, 11 blinking, 12 slow blinking, 13 rotating with two lights, 14 permanently slow all blinking, 15 blink once.
 
-Power-State: `0xC0 | Zustand`, Zustand 0 schaltet den Controller aus [Quelle: argon.md]. Andere Zustände (1–3) sind unerforscht.
+Power state: `0xC0 | state`, state 0 turns the controller off [Source: argon.md]. Other states (1–3) are unexplored.
 
-## 4. Was der Linux-Kernel (xpad.c) davon nutzt
+## 4. What the Linux kernel (xpad.c) uses of this
 
-- Verbindung/Trennung (Bit 0x08 im ersten Byte, Controller-Bit 0x80 im zweiten) und Eingabedaten (Typ 0x01) werden ausgewertet.
-- **Status-, Link- und Fähigkeitenpakete werden nicht ausgewertet.** Es gibt keine `power_supply`-Registrierung für den Akku [Quelle: xpad.c, im Quelltext gesucht].
-- Ausschalten passiert nur (a) nach 5 Sekunden Halten der Guide-Taste (`XPAD360W_POWEROFF_TIMEOUT`) und (b) beim System-Suspend, wenn der Modulparameter `auto_poweroff` gesetzt ist (Standard: an, beschreibbar unter `/sys/module/xpad/parameters/auto_poweroff`).
-- LEDs erscheinen als `/sys/class/leds/xpadN/brightness`. Geschrieben wird ein Befehl 0–15 (`command %= 16`). Der LED-Eintrag hängt am USB-Gerät, nicht an der Schnittstelle. Die Zuordnung xpadN → Slot ist deshalb nicht direkt ablesbar (siehe PLAN.md, offenes Problem 2).
-- Rumble läuft über die normale Force-Feedback-Schnittstelle des Eingabegeräts.
+- Connection/disconnection (bit 0x08 in the first byte, controller bit 0x80 in the second) and input data (type 0x01) are evaluated.
+- **State, link and capabilities packets are not evaluated.** There is no `power_supply` registration for the battery [Source: xpad.c, searched in the source].
+- Turning off happens only (a) after holding the Guide button for 5 seconds (`XPAD360W_POWEROFF_TIMEOUT`) and (b) on system suspend if the module parameter `auto_poweroff` is set (default: on, writable under `/sys/module/xpad/parameters/auto_poweroff`).
+- LEDs appear as `/sys/class/leds/xpadN/brightness`. A command 0–15 is written (`command %= 16`). The LED entry hangs on the USB device, not on the interface. The assignment xpadN → slot can therefore not be read directly (see PLAN.md, open problem 2).
+- Rumble goes through the input device's normal force-feedback interface.
 
-## 5. Offene Quellenlage
+## 5. Open source situation
 
-- Die Datei xboxdrv/PROTOCOL wurde nur bis etwa zur Hälfte geladen (Rest nicht gesehen).
-- Die Hardware-Beispiele stammen größtenteils von Drittanbieter-Controllern bzw. -Receivern. Original-Microsoft-Geräte können abweichen.
-- Es wurde kein Host-Befehl für Sync/Pairing, Slot-Zuweisung oder Funkqualität gefunden. Das heißt nicht, dass es keinen gibt.
+- The file xboxdrv/PROTOCOL was only loaded up to about the halfway point (rest not seen).
+- The hardware examples mostly come from third-party controllers or receivers. Original Microsoft devices can differ.
+- No host command was found for sync/pairing, slot assignment or radio quality. That does not mean there is none.
 
-## 6. Hardware-Bestätigung (Mitschnitt vom 2026-11-04)
+## 6. Hardware confirmation (capture of 2026-11-04)
 
-Gerät: Receiver 045E:0719, Bazzite-Deck 44.20261026, Kernel 7.2.11-ogc4.1, ein Gamepad. Rohdaten: `tests/fixtures/capture_connect_gamepad_2026-11-04.txt`, geprüft durch `tests/test_fixture_capture.py`. Dauer ca. 38 s.
+Device: receiver 045E:0719, Bazzite-Deck 44.20261026, kernel 7.2.11-ogc4.1, one gamepad. Raw data: `tests/fixtures/capture_connect_gamepad_2026-11-04.txt`, checked by `tests/test_fixture_capture.py`. Duration about 38 s.
 
-Bestätigt an echter Hardware:
-- usbmon liefert die **vollständigen 29 Bytes** der IN-Pakete.
-- Verbindungspaket: `08 00` = nichts verbunden, `08 80` = Controller verbunden.
-- Direkt nach dem Verbinden folgt ein Link-Report (Subtyp 0x01 = Gamepad, Protokoll 0x1D20, Revision 0x20; im xboxdrv-Beispiel war die Revision 0x05, sie variiert also), danach ein Statuspaket (Header-Daten `13 A2`: Akku-Stufe 2, Akkutyp roh 1, Power-State roh 2, Vibration 3, kein Headset/Chatpad).
-- Eingabepakete (Typ 0x01): Tastenmaske entspricht dem XInput-Layout (A 0x1000, B 0x2000, X 0x4000, Y 0x8000, LB 0x0100, RB 0x0200, L3 0x0040, R3 0x0080, D-Pad 0x0001/0x0002/0x0004/0x0008). Trigger 0–255, Sticks 16 Bit mit Vorzeichen. Auf jedes Eingabepaket folgt ein Leerpaket `00 00 00 F0`.
-- `xpad` sendet beim Trennen LED-Befehl 0 (`00 00 08 40 …`) und beim Verbinden LED-Befehl 2 (`00 00 08 42 …`). Beides ist byteidentisch mit `build_led(0)` und `build_led(2)`.
-- Schreiben in `/sys/class/leds/xpadN/brightness` ändert die Controller-LEDs (vom Nutzer gemeldet, 2026-11-04). Welcher Modus getestet wurde und auf welchem OUT-Endpunkt der Befehl erschien, ist nicht erfasst. Die LED `xpadN` existiert nur bei verbundenem Controller.
+Confirmed on real hardware:
+- usbmon delivers the **complete 29 bytes** of the IN packets.
+- Connection packet: `08 00` = nothing connected, `08 80` = controller connected.
+- Right after connecting, a link report follows (subtype 0x01 = gamepad, protocol 0x1D20, revision 0x20; in the xboxdrv example the revision was 0x05, so it varies), then a state packet (header data `13 A2`: battery level 2, battery type raw 1, power state raw 2, vibration 3, no headset/chatpad).
+- Input packets (type 0x01): the button mask matches the XInput layout (A 0x1000, B 0x2000, X 0x4000, Y 0x8000, LB 0x0100, RB 0x0200, L3 0x0040, R3 0x0080, D-pad 0x0001/0x0002/0x0004/0x0008). Triggers 0–255, sticks 16-bit signed. Every input packet is followed by an empty packet `00 00 00 F0`.
+- `xpad` sends LED command 0 (`00 00 08 40 …`) on disconnect and LED command 2 (`00 00 08 42 …`) on connect. Both are byte-identical to `build_led(0)` and `build_led(2)`.
+- Writing to `/sys/class/leds/xpadN/brightness` changes the controller's LEDs (reported by the user, 2026-11-04). Which mode was tested and on which OUT endpoint the command appeared was not recorded. The LED `xpadN` only exists while a controller is connected.
 
-Beobachtet, aber nicht erklärt:
-- Nach dem Statuspaket folgen drei Typ-0-Pakete mit den Header-Daten `20 1D`, `30 03`, `40 01` und dann `F0 00`. Dieselben Bytefolgen stehen im Link-Report (Protokoll, unbekanntes Feld, Beginn der vendorIDData). Das spricht für Tag/Wert-Paare, ist aber nur eine Vermutung.
-- Pakete `00 F8 01` und `00 F8 02` kamen fünfmal in 38 s (bei 0,0 / 13,5 / 19,8 / 29,0 / 37,6 s), unregelmäßig. Bedeutung unbekannt.
-- **Es kam nur ein einziges Statuspaket, beim Verbinden.** Ob der Receiver den Akkustand später von sich aus erneut meldet, ist offen. Wenn nicht, kann ein passiver Monitor den Akku eines schon verbundenen Controllers nicht sehen.
+Observed but not explained:
+- After the state packet come three type-0 packets with header data `20 1D`, `30 03`, `40 01` and then `F0 00`. The same byte sequences are in the link report (protocol, unknown field, start of the vendorIDData). That suggests tag/value pairs, but it is only a guess.
+- Packets `00 F8 01` and `00 F8 02` came five times in 38 s (at 0.0 / 13.5 / 19.8 / 29.0 / 37.6 s), irregularly. Meaning unknown.
+- **Only a single state packet came, on connecting.** Whether the receiver reports the battery level again on its own later is open. If not, a passive monitor cannot see the battery of an already connected controller.
 
-Weiterhin ungeprüft: Zuordnung Stufe 0–3 zu Ladezustand (nur Stufe 2 beobachtet, Batteriezustand unbekannt), Bedeutung der Akkutyp-Werte, Ausschalten per Befehl, Guide/Start/Back.
+Still unchecked: mapping of level 0–3 to charge state (only level 2 observed, battery condition unknown), meaning of the battery type values, turning off by command, Guide/Start/Back.
 
-## 7. Zweiter Mitschnitt (2026-11-05): Leerlauf nach dem Verbinden
+## 7. Second capture (2026-11-05): idle after connecting
 
-Gerät wie in Abschnitt 6, ein Gamepad. Rohdaten: `tests/fixtures/capture_idle_gamepad_2026-11-05.txt`, geprüft durch `tests/test_fixture_idle.py`. 393 s, davon ca. 380 s mit verbundenem Controller. Die Datei ist am Ende abgeschnitten (grep puffert in 4-KiB-Blöcken, bei 12288 Byte war Schluss). Der geplante LED-Test, das Halten der Guide-Taste und die Tastendrücke stehen nicht darin; im Fenster ist nur eine einzelne Eingabe (bei 73,5 s, Tastenmaske 0, vermutlich eine Stick-Berührung).
+Device as in section 6, one gamepad. Raw data: `tests/fixtures/capture_idle_gamepad_2026-11-05.txt`, checked by `tests/test_fixture_idle.py`. 393 s, of which about 380 s with a connected controller. The file is cut off at the end (grep buffers in 4 KiB blocks, it stopped at 12288 bytes). The planned LED test, holding the Guide button and the button presses are not in it; in the window there is only a single input (at 73.5 s, button mask 0, presumably a touch of the stick).
 
-Bestätigt an echter Hardware (ein Controller, ein Fenster, Leerlauf):
-- **Nach dem Verbinden kommt kein weiteres Statuspaket.** Kein Link-Report, kein Typ-0-Zustand, kein Zustand im Header eines Eingabepakets in den folgenden ca. 380 s. Der Receiver meldet den Akku also nicht von sich aus periodisch. Nicht geprüft: Reaktion auf LED-Befehl, Tastendruck, Guide, Ausschalten, langen Betrieb mit sinkendem Akku.
-- Die Verbindungsfolge ist reproduzierbar: `08 00` (getrennt), LED-Befehl 0, `08 80` (verbunden), LED-Befehl 2, Link-Report, dann eine Folge von Paketen mit Header-Daten `13 A2` (Zustand), `00 20`, `13 A2` (Zustand), `20 1D`, `30 03`, `40 01`, danach dauerhaft `F0 00`. Der Zustand war beide Male Stufe 2, Typ roh 1, Power-State roh 2. Der Akku-Wert im Link-Report hatte Bit 0 gesetzt (`13 A3`), im Zustandspaket nicht (`13 A2`); Bedeutung des Bits unbekannt.
-- **Der Zustand kann im Header eines Eingabepakets (Typ 0x01) stehen**, nicht nur in einem Typ-0-Paket. Im ersten Mitschnitt kamen dieselben Header-Daten als Typ 0; die Reihenfolge und der Pakettyp wechseln also. Der Parser wertet die Header-Daten deshalb auch bei Eingabepaketen aus (`InputReport.state`).
-- Pakete `00 F8 01` und `00 F8 02` kommen weiter, **50 Stück in 393 s, strikt abwechselnd** (02, 01, 02, 01, …). Jeder Abstand ist größer als 2,0 s und liegt nahe an einem Vielfachen von ca. 2,1 s (2,1 / 4,2 / 6,3 / 8,4 / 12,5 / …). Das spricht für ein Umschalten, das auf einem festen Takt abgetastet wird. Bedeutung unbekannt; denkbar wäre eine Verbindungsqualität, das ist nur eine Vermutung. Prüfung: Controller bewusst abschirmen oder entfernen und beobachten, ob sich Rate oder Verhältnis ändern.
-- Leere Pakete `00 00 00 F0` kommen auch ohne Eingabe vor, einzeln und in Paaren.
+Confirmed on real hardware (one controller, one window, idle):
+- **After connecting, no further state packet comes.** No link report, no type-0 state, no state in the header of an input packet in the following about 380 s. So the receiver does not report the battery periodically on its own. Not checked: reaction to an LED command, button press, Guide, turning off, long operation with a draining battery.
+- The connection sequence is reproducible: `08 00` (disconnected), LED command 0, `08 80` (connected), LED command 2, link report, then a series of packets with header data `13 A2` (state), `00 20`, `13 A2` (state), `20 1D`, `30 03`, `40 01`, then permanently `F0 00`. The state was level 2, type raw 1, power state raw 2 both times. The battery value in the link report had bit 0 set (`13 A3`), in the state packet it did not (`13 A2`); meaning of the bit unknown.
+- **The state can be in the header of an input packet (type 0x01)**, not only in a type-0 packet. In the first capture the same header data came as type 0; so the order and the packet type change. The parser therefore also evaluates the header data of input packets (`InputReport.state`).
+- Packets `00 F8 01` and `00 F8 02` keep coming, **50 of them in 393 s, strictly alternating** (02, 01, 02, 01, …). Every gap is larger than 2.0 s and close to a multiple of about 2.1 s (2.1 / 4.2 / 6.3 / 8.4 / 12.5 / …). That suggests a toggle that is sampled on a fixed clock. Meaning unknown; a connection quality would be conceivable, that is only a guess. Check: deliberately shield or remove the controller and observe whether rate or ratio change.
+- Empty packets `00 00 00 F0` also occur without input, singly and in pairs.
 
-Ungeprüft bleibt weiterhin: Stufen-Zuordnung, Akkutyp-Werte, Ausschalten per Befehl, Guide/Start/Back, welcher OUT-Endpunkt zu welchem Slot gehört.
+Still unchecked: level mapping, battery type values, turning off by command, Guide/Start/Back, which OUT endpoint belongs to which slot.
 
-## 8. Dritter Mitschnitt (2026-11-05): LED, Tasten, Neubinden, Ausschalten
+## 8. Third capture (2026-11-05): LED, buttons, re-binding, turning off
 
-Gerät wie zuvor, ein Gamepad. Rohdaten: `tests/fixtures/capture_events_gamepad_2026-11-05.txt` (vollständig, 246,7 s), geprüft durch `tests/test_fixture_events.py`. Zeiten in Sekunden seit Beginn.
+Device as before, one gamepad. Raw data: `tests/fixtures/capture_events_gamepad_2026-11-05.txt` (complete, 246.7 s), checked by `tests/test_fixture_events.py`. Times in seconds since the start.
 
-Bestätigt an echter Hardware:
-- **LED-Befehle** (`00 00 08 4A` = Modus 10 bei 114,3 s, `00 00 08 42` = Modus 2 bei 132,4 s) gehen auf **OUT-Endpunkt 0x01**. Die LED `xpad0` gehört damit zum ersten Slot (nur ein Controller, die Zuordnung für weitere Slots ist ungeprüft). Auf LED-Befehle antwortet der Receiver mit **keinem** Statuspaket.
-- **Tasten:** A = 0x1000, B = 0x2000, **Guide = 0x0400** in der Tastenmaske des Eingabepakets. Tastendrücke lösen kein Statuspaket aus.
-- **Lösen von `xpad`** (unbind): Der lesende URB endet mit Status −108, `xpad` versucht noch LED 0 zu senden (Fehler −2).
-- **Binden von `xpad`** (bind): `xpad` sendet `08 00 0F C0` (byteidentisch mit `build_status_request()`). Der Receiver antwortet binnen 6 ms mit dem Verbindungspaket `08 80` und einem Link-Report. Der Link-Report ist **byteidentisch** zu dem beim echten Verbinden (Zustand darin `13 A3`: Stufe 2). **Kein** Zustandspaket und **keine** Header-Folge (`13 A2`, `20 1D`, …) folgt. Ob der Akkuwert im Link-Report frisch gemessen oder eine Kopie des Receivers ist, ist unbekannt. Auffällig: Im Link-Report ist Bit 0 des Zustands gesetzt (`A3`), in echten Zustandspaketen nie (`A2`). Das spricht eher für eine Kopie oder ein anderes Feld; ein Beleg ist es nicht.
-- **Ausschalten:** `xpad` sendet `00 00 08 C0` auf Endpunkt 0x01, **5,056 s nach dem Guide-Druck**, im selben Augenblick wie das nächste Eingabepaket (das Loslassen, Tastenmaske 0). Danach, gemessen ab dem Befehl: **Zustandspaket 27 ms später (Header `13 82`: Stufe 2, Typ 1, Power-State 0)**, Verbindungspaket `08 00` nach 55 ms, LED-Befehl 0 von `xpad` nach 63 ms. Wiedereinschalten von Hand nach 12,3 s erzeugte die übliche Verbindungsfolge. Dass der Controller nach dem Befehl aus war, folgt aus dem Verbindungspaket und der späteren Neuverbindung; ob er auch ohne den Befehl ausgegangen wäre, wurde nicht getrennt geprüft.
-- Das ist das **erste Statuspaket mitten in einer Sitzung**. Es kam beim Ausschalten, nicht periodisch. Power-State 2 (normal) wechselte zu 0.
-- Nach echtem Verbinden: Link-Report, dann Header-Folge. Reihenfolge der ersten Häppchen wechselt zwischen Sitzungen. Die Werte `00 20`, `13 A2`, `20 1D`, `30 03`, `40 01` entsprechen in dieser Reihenfolge den Bytes im Körper des Link-Reports (`00 20 13 A3 20 1D 30 03 40 01 50 01`). Hypothese: Das sind 2-Byte-Häppchen desselben Datensatzes, im Header folgender Pakete verteilt; am Link-Report fehlt `50 01` und Bit 0 von `13`. Mittleres Vertrauen.
+Confirmed on real hardware:
+- **LED commands** (`00 00 08 4A` = mode 10 at 114.3 s, `00 00 08 42` = mode 2 at 132.4 s) go to **OUT endpoint 0x01**. The LED `xpad0` thus belongs to the first slot (only one controller, the assignment for further slots is unchecked). The receiver answers LED commands with **no** state packet.
+- **Buttons:** A = 0x1000, B = 0x2000, **Guide = 0x0400** in the input packet's button mask. Button presses trigger no state packet.
+- **Unbinding `xpad`:** the reading URB ends with status −108, `xpad` still tries to send LED 0 (error −2).
+- **Binding `xpad`:** `xpad` sends `08 00 0F C0` (byte-identical to `build_status_request()`). Within 6 ms the receiver answers with the connection packet `08 80` and a link report. The link report is **byte-identical** to the one on a real connect (state in it `13 A3`: level 2). **No** state packet and **no** header sequence (`13 A2`, `20 1D`, …) follows. Whether the battery value in the link report is freshly measured or a copy held by the receiver is unknown. Notable: in the link report bit 0 of the state is set (`A3`), in real state packets never (`A2`). That points more to a copy or a different field; it is not proof.
+- **Turning off:** `xpad` sends `00 00 08 C0` on endpoint 0x01, **5.056 s after the Guide press**, at the same moment as the next input packet (the release, button mask 0). After that, measured from the command: **state packet 27 ms later (header `13 82`: level 2, type 1, power state 0)**, connection packet `08 00` after 55 ms, LED command 0 from `xpad` after 63 ms. Switching back on by hand after 12.3 s produced the usual connection sequence. That the controller was off after the command follows from the connection packet and the later reconnection; whether it would have turned off without the command was not checked separately.
+- This is the **first state packet in the middle of a session**. It came on turning off, not periodically. Power state 2 (normal) changed to 0.
+- After a real connect: link report, then the header sequence. The order of the first pieces changes between sessions. The values `00 20`, `13 A2`, `20 1D`, `30 03`, `40 01` correspond in this order to the bytes in the body of the link report (`00 20 13 A3 20 1D 30 03 40 01 50 01`). Hypothesis: these are 2-byte pieces of the same record, spread over the headers of following packets; `50 01` and bit 0 of `13` are missing from the link report. Medium confidence.
 
-Aus dem Quelltext (`drivers/input/joystick/xpad.c`, aktueller Hauptzweig von Torvalds, **nicht** die Version des Geräts):
-- Kommentar „XBOX360W controllers can't be turned off without driver assistance“. Der Treiber merkt sich den Guide-Druck (Sekundenauflösung) und prüft bei **jedem folgenden Eingabepaket**, ob mindestens 5 s vergangen sind. Dann sendet er `00 00 08 C0`. Halten allein erzeugt kein Paket; erst das Loslassen oder eine Stickbewegung löst aus. Passt zum Mitschnitt.
-- Beim Start (`xpad360w_start_input`) sendet der Treiber die Anwesenheitsabfrage; der Kommentar sagt, das erzwinge erneute Verbindungspakete. Passt zum Mitschnitt.
-- Beim Suspend sendet der Treiber `C0`, wenn `auto_poweroff` an ist und ein Controller anwesend ist.
+From the source code (`drivers/input/joystick/xpad.c`, current Torvalds main branch, **not** the version on the device):
+- Comment "XBOX360W controllers can't be turned off without driver assistance". The driver remembers the Guide press (one-second resolution) and checks at **every following input packet** whether at least 5 s have passed. Then it sends `00 00 08 C0`. Holding alone produces no packet; only the release or a stick movement triggers it. Matches the capture.
+- On start (`xpad360w_start_input`) the driver sends the presence request; the comment says this forces new connection packets. Matches the capture.
+- On suspend the driver sends `C0` if `auto_poweroff` is on and a controller is present.
 
-Folgerungen (keine Messung): Ein Programm, das für wenige Sekunden eine Schnittstelle selbst belegt, könnte `C0` senden. Das Ausschalten eines Controllers kostet keine Eingabe, weil er danach ohnehin aus ist. Ob die Akkuanfrage `00 00 00 40` etwas liefert, ist unbekannt (Phase 0d).
+Conclusions (not a measurement): A program that claims an interface itself for a few seconds could send `C0`. Turning a controller off costs no input, because it is off afterwards anyway. Whether the battery request `00 00 00 40` returns anything is unknown (phase 0d).
 
-## 9. Vierter Mitschnitt (2026-11-05): kurzer Zugriff mit `tools/probe_takeover.py`
+## 9. Fourth capture (2026-11-05): short access with `tools/probe_takeover.py`
 
-Rohdaten: `tests/fixtures/capture_takeover_gamepad_2026-11-05.txt` (115 s, vollständig), geprüft durch `tests/test_fixture_takeover.py`. Dazu die Terminal-Ausgabe des Werkzeugs (Dekodierung stimmt mit dem Mitschnitt überein). Ein Receiver 045E:0719, ein Gamepad in Slot 1.
+Raw data: `tests/fixtures/capture_takeover_gamepad_2026-11-05.txt` (115 s, complete), checked by `tests/test_fixture_takeover.py`. Plus the tool's terminal output (the decoding matches the capture). One receiver 045E:0719, one gamepad in slot 1.
 
-Bestätigt an echter Hardware:
-- **Übernahme einer Schnittstelle über libusb funktioniert** (`LibusbBackend`: Gerät öffnen, `xpad` automatisch lösen, Schnittstelle belegen, auf OUT 0x01 schreiben, auf IN 0x81 lesen, freigeben). `xpad` bindet danach jedes Mal wieder, etwa 2 s nach dem Zugriff, und sendet dabei selbst Anwesenheitsabfrage und LED-Befehl 2. Beim Lösen sendet `xpad` noch LED 0 (Fehler −2, weil es gerade abgebaut wird).
-- **Anwesenheitsabfrage** `08 00 0F C0` (selbst gesendet): Antwort `08 80` plus Link-Report binnen 8 ms.
-- **Akkuanfrage `00 00 00 40`:** Antwort ist **ein Statuspaket** `00 00 00 13 A2` (Stufe 2, Typ 1, Power-State 2, Bit 0 = 0) nach **27 ms**, gefolgt von einem leeren Paket. Das ist dasselbe Paketformat wie beim Verbinden. Es ist die erste Möglichkeit, den Akku **bei Bedarf** zu erhalten.
-- **Ausschalten `00 00 08 C0`** (selbst gesendet): Nach 31 ms ein Statuspaket mit Power-State 2, nach 39 ms eines mit **Power-State 0** (`13 82`), nach 55 ms `08 00` (getrennt). Der Controller war danach aus. Eine anschließende Anwesenheitsabfrage von `xpad` ergab `08 00`.
-- **Manuelles Wiedereinschalten** 18 s später: `08 80`, Link-Report, Header-Folge wie üblich; `xpad` (wieder gebunden) setzte sofort LED 2. Der Controller verband sich also wieder normal.
-- Die Lesezeitüberschreitungen des Werkzeugs (alle 100 ms, URB-Status −2) sind Teil des Verfahrens, keine Fehler.
+Confirmed on real hardware:
+- **Taking over an interface through libusb works** (`LibusbBackend`: open the device, detach `xpad` automatically, claim the interface, write to OUT 0x01, read from IN 0x81, release). `xpad` binds again afterwards every time, about 2 s after the access, and itself sends the presence request and LED command 2 in the process. When detaching, `xpad` still sends LED 0 (error −2, because it is just being torn down).
+- **Presence request** `08 00 0F C0` (sent by ourselves): answer `08 80` plus link report within 8 ms.
+- **Battery request `00 00 00 40`:** the answer is **a state packet** `00 00 00 13 A2` (level 2, type 1, power state 2, bit 0 = 0) after **27 ms**, followed by an empty packet. That is the same packet format as on connecting. It is the first way to get the battery **on demand**.
+- **Turn off `00 00 08 C0`** (sent by ourselves): after 31 ms a state packet with power state 2, after 39 ms one with **power state 0** (`13 82`), after 55 ms `08 00` (disconnected). The controller was off afterwards. A subsequent presence request from `xpad` gave `08 00`.
+- **Manual switching back on** 18 s later: `08 80`, link report, header sequence as usual; `xpad` (bound again) immediately set LED 2. So the controller connected normally again.
+- The tool's read timeouts (every 100 ms, URB status −2) are part of the procedure, not errors.
 
-Offen:
-- **Frische des Akkuwerts.** Er war bei allen Abfragen Stufe 2. Ob der Receiver den Controller bei der Anfrage frisch befragt oder aus einem Zwischenspeicher antwortet, ist ungeklärt. Der Zustand mit Power-State 0 beim Ausschalten zeigt, dass Zustandspakete den Controller-Zustand widerspiegeln können (der Receiver konnte den Wechsel nicht selbst wissen), ist aber kein Beleg für die Akkuanfrage. Test: Akkuanfrage bei ausgeschaltetem Controller (kommt dann trotzdem ein Statuspaket, ist es ein Zwischenspeicher), später bei sinkendem Akku.
-- Wie Steam den kurzen Verlust des Controllers behandelt (Anzeige, Spielerreihenfolge, laufende Spiele).
-- Verhalten mit mehreren Controllern am selben Receiver (andere Slots sollten unberührt bleiben, ungeprüft).
+Open:
+- **Freshness of the battery value.** It was level 2 for all queries. Whether the receiver polls the controller afresh on the request or answers from a cache is unresolved. The state with power state 0 on turning off shows that state packets can reflect the controller's state (the receiver could not know the change itself), but it is no proof for the battery request. Test: battery request with the controller off (if a state packet still comes, it is a cache), later with a draining battery.
+- How Steam treats the controller's brief loss (display, player order, running games).
+- Behavior with several controllers on the same receiver (other slots should stay untouched, unchecked).
 
-## 10. Weitere Terminalmessungen (2026-11-05): Akkuanfrage ohne Mitschnitt
+## 10. Further terminal measurements (2026-11-05): battery request without a capture
 
-Nur Terminalausgabe von `tools/probe_takeover.py --battery-request`, kein usbmon-Mitschnitt. Zwei Läufe hintereinander, Zustand des Controllers nicht ausdrücklich angegeben; nach der Reihenfolge der Ausgabe ist **angenommen**, dass er im ersten Lauf ausgeschaltet und im zweiten eingeschaltet war.
-- Erster Lauf: Anfrage gesendet, **0 Pakete** zurück.
-- Zweiter Lauf: Statuspaket `00 00 00 13 A2` nach 0,02 s (Stufe 2, Typ 1, Power-State 2), dann leeres Paket.
-- Trifft die Annahme zu, antwortet der Receiver **nicht aus einem Zwischenspeicher**: Bei ausgeschaltetem Controller kommt kein Statuspaket, bei eingeschaltetem eines. Das spricht dafür, dass der Controller bei der Anfrage befragt wird. Es ist trotzdem kein Beleg für einen sich ändernden Wert; der war bei allen Abfragen Stufe 2.
-- Batterie laut Nutzer: **2 AA NiMH**. Zugehörig: Akkutyp roh 1. Andere Werte (Pack, Netz) unbeobachtet. Bei NiMH ist die Spannungskurve flach; die Vierstufigkeit des Protokolls ist daher grob.
+Only terminal output of `tools/probe_takeover.py --battery-request`, no usbmon capture. Two runs in a row, the controller's state not stated explicitly; from the order of the output it is **assumed** that it was off in the first run and on in the second.
+- First run: request sent, **0 packets** back.
+- Second run: state packet `00 00 00 13 A2` after 0.02 s (level 2, type 1, power state 2), then an empty packet.
+- If the assumption holds, the receiver does **not answer from a cache**: with the controller off no state packet comes, with it on one does. That suggests the controller is polled on the request. It is still no proof of a changing value; that was level 2 for all queries.
+- Battery according to the user: **2 AA NiMH**. Belonging to it: battery type raw 1. Other values (pack, mains) unobserved. With NiMH the voltage curve is flat; the protocol's four levels are therefore coarse.
 
-Systemstruktur, bestätigt: Der Receiver heißt in sysfs `1-3`, `xpad` ist an `1-3:1.0`, `1-3:1.2`, `1-3:1.4`, `1-3:1.6` gebunden (die Schnittstellen 1, 3, 5, 7 sind Audio und ungebunden). Daneben gibt es `1-4` (anderes Gerät) und die Root-Hubs `N-0:1.0`.
-
+System structure, confirmed: The receiver is called `1-3` in sysfs, `xpad` is bound to `1-3:1.0`, `1-3:1.2`, `1-3:1.4`, `1-3:1.6` (interfaces 1, 3, 5, 7 are audio and unbound). Besides that there is `1-4` (another device) and the root hubs `N-0:1.0`.

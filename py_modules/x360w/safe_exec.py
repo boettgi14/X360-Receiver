@@ -1,12 +1,14 @@
-"""Feste Programmaufrufe mit bereinigter Umgebung.
+"""Fixed program calls with a sanitized environment.
 
-Das Decky-Backend ist ein PyInstaller-Programm und kann seinen Unterprozessen eine fremde
-`LD_LIBRARY_PATH` vererben; Systemprogramme wie `systemctl` laden dann die falschen Bibliotheken
-und scheitern. Decky selbst startet seine Unterprozesse deshalb mit leerer Umgebung (`env={}`).
-Hier: absoluter Pfad aus einem festen Suchpfad und eine Umgebung mit nur PATH und LANG.
+The Decky backend is a PyInstaller program and can pass a foreign `LD_LIBRARY_PATH` on to its
+child processes; system programs such as `systemctl` then load the wrong libraries and fail. Decky
+itself therefore starts its child processes with an empty environment (`env={}`).
+Here: an absolute path from a fixed search path and an environment with only PATH and LANG.
+`LANG=C` and `LC_ALL=C` also make the output of external programs independent of the system language,
+so the plugin behaves the same on a German and an English system.
 
-Ob genau das bei `systemctl` im Plugin das Problem war, ist am Gerät nicht belegt; es ist der
-wahrscheinlichste Grund, den ich im Quelltext finden konnte.
+Whether exactly this was the problem with `systemctl` inside the plugin is not proven on the
+device; it is the most likely cause I could find in the source code.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ def safe_env() -> dict:
 
 
 def run_fixed(argv: Sequence[str], timeout: float, runner: Callable = subprocess.run):
-    """Führt ein festes Kommando aus. `argv` darf keine Nutzereingaben enthalten."""
+    """Runs a fixed command. `argv` must not contain user input."""
     executable = shutil.which(argv[0], path=SAFE_PATH) or argv[0]
     return runner(
         [executable, *argv[1:]],

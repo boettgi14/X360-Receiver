@@ -1,12 +1,12 @@
-"""Zwischenspeicher für aktiv abgefragte Akkustände (Akkuanfrage über den kurzen Zugriff).
+"""Cache for actively queried battery levels (battery request through the short access).
 
-Der Receiver meldet den Akku von sich aus nur beim Verbinden. Ein Controller, der schon vor dem
-Start des Plugins verbunden war, hat daher ohne aktive Anfrage nie einen Wert. Das Ergebnis der
-Anfrage steht hier, damit die Oberfläche es auch ohne den usbmon-Monitor zeigen kann.
+The receiver reports the battery on its own only when a controller connects. A controller that was
+already connected before the plugin started therefore never has a value without an active request.
+The result of the request is kept here so the UI can show it even without the usbmon monitor.
 
-Ein Eintrag verfällt, wenn sein Slot länger als `grace_s` nicht mehr als verbunden gesehen wurde.
-Die Frist ist nötig, weil der Controller während der Anfrage selbst für einige Sekunden aus dem
-System verschwindet (xpad ist gelöst); das ist keine echte Trennung.
+An entry expires when its slot has not been seen as connected for longer than `grace_s`. The grace
+period is needed because the controller itself disappears from the system for a few seconds during
+the request (xpad is unbound); that is not a real disconnect.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Callable, Dict, Iterable, Optional, Set, Tuple
 
-Key = Tuple[int, int, int]  # (Bus, Gerät, Slot)
+Key = Tuple[int, int, int]  # (bus, device, slot)
 
 GRACE_S = 15.0
 
@@ -29,7 +29,7 @@ class BatteryCache:
         self._missing_since: Dict[Key, Optional[float]] = {}
 
     def store(self, key: Key, state: dict) -> None:
-        """`state` ist das Statuswörterbuch aus `actions.query_battery`."""
+        """`state` is the state dict from `actions.query_battery`."""
         entry = {
             "battery_level": state["battery_level"],
             "battery_type_raw": state.get("battery_type_raw"),
@@ -54,7 +54,7 @@ class BatteryCache:
             }
 
     def prune(self, present: Iterable[Key]) -> None:
-        """Verwirft Einträge von Slots, die länger als die Frist nicht mehr verbunden waren."""
+        """Drops entries of slots that have not been connected for longer than the grace period."""
         present_set: Set[Key] = set(present)
         now = self._clock()
         with self._lock:

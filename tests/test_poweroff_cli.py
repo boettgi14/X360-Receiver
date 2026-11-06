@@ -1,4 +1,4 @@
-"""Tests für x360w.poweroff_cli: Programm des Dienstes."""
+"""Tests for x360w.poweroff_cli: the service's program."""
 
 import contextlib
 import io
@@ -28,29 +28,29 @@ class RunTests(unittest.TestCase):
         self.assertEqual(report["receivers"], 1)
         self.assertEqual(report["duration_s"], 2.5)
         self.assertIsNone(report["error"])
-        json.dumps(report)  # muss als JSON schreibbar sein
+        json.dumps(report)  # must be writable as JSON
 
     def test_no_controller_sends_nothing(self):
         def power_off(targets):
-            raise AssertionError("nichts zu senden")
+            raise AssertionError("nothing to send")
 
         report = poweroff_cli.run(lambda: (1, []), power_off)
         self.assertEqual(report["result"], {"ok": True, "sent": 0, "confirmed": 0, "errors": []})
 
     def test_errors_are_reported_never_raised(self):
         def plan():
-            raise OSError("sysfs weg")
+            raise OSError("sysfs gone")
 
         report = poweroff_cli.run(plan, lambda t: {})
-        self.assertIn("OSError: sysfs weg", report["error"])
+        self.assertIn("OSError: sysfs gone", report["error"])
         def power_off(targets):
-            raise RuntimeError("usb weg")
+            raise RuntimeError("usb gone")
 
         report = poweroff_cli.run(lambda: (1, [(1, 2, 0)]), power_off)
-        self.assertIn("RuntimeError: usb weg", report["error"])
+        self.assertIn("RuntimeError: usb gone", report["error"])
 
     def test_default_plan_uses_the_same_rules_as_the_button(self):
-        # Ohne Receiver (wie im Testcontainer) gibt es nichts zu tun
+        # Without a receiver (as in a test container) there is nothing to do
         receivers, targets = poweroff_cli.plan_targets()
         self.assertIsInstance(receivers, int)
         self.assertIsInstance(targets, list)
@@ -80,7 +80,7 @@ class MainTests(unittest.TestCase):
         poweroff_cli.run = lambda: {"at": 1.0, "targets": [], "result": None, "error": None}
         try:
             with contextlib.redirect_stdout(out):
-                code = poweroff_cli.main("/proc/nicht/schreibbar")
+                code = poweroff_cli.main("/proc/not/writable")
         finally:
             poweroff_cli.run = original
         self.assertEqual(code, 0)

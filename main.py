@@ -1,15 +1,20 @@
-"""Decky-Backend des Plugins „X360 Receiver“.
+"""Decky backend of the "X360 Receiver" plugin.
 
-Läuft mit Root-Rechten ("root" in plugin.json; Decky prüft genau diese Zeichenfolge). Schreibt nur auf die Pfade aus
-x360w.controls. Der USB-Monitor (usbmon) ist standardmäßig aus und wird nur mit
-ausdrücklicher Zustimmung des Nutzers aktiviert; die Einstellung wird gespeichert.
+Runs with root rights ("root" in plugin.json; Decky checks for exactly this string). Writes only to the
+paths named in x360w.controls. The USB monitor (usbmon) is off by default and is only switched on with
+the user's explicit consent; the setting is saved.
 
-Gespeicherte Einstellungen (x360w.json): monitor_enabled, auto_poweroff (gewünschter Wert, wird beim
-Start angewendet), poweroff_on_shutdown, original_auto_poweroff (Ausgangswert für das Entfernen).
+The backend is language-neutral: it never produces text in the user's language. Failed actions return
+{"ok": False, "error": <English text>} and, for failures a user can act on, an additional "code" (and
+optionally "detail") that the frontend (src/i18n.ts) turns into a message in the Steam UI language.
+The codes are listed in x360w.error_codes.
 
-„Beim Herunterfahren ausschalten“ übernimmt ein eigener systemd-Dienst (x360w.poweroff_unit), den das
-Plugin beim Einschalten der Option anlegt und beim Ausschalten und Entfernen löscht: Decky stoppt das
-Plugin beim Herunterfahren nicht zuverlässig (am Gerät beobachtet).
+Saved settings (x360w.json): monitor_enabled, auto_poweroff (desired value, applied on start),
+poweroff_on_shutdown, original_auto_poweroff (initial value, restored on removal).
+
+"Turn off on shutdown" is handled by a separate systemd service (x360w.poweroff_unit) that the
+plugin creates when the option is switched on and deletes when it is switched off or the plugin is
+removed: Decky does not reliably stop the plugin on shutdown (observed on the device).
 """
 
 import asyncio
@@ -18,18 +23,19 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
-# py_modules liegt neben dieser Datei. Sicherheitshalber explizit in den Suchpfad.
+# py_modules sits next to this file. Add it to the search path explicitly to be safe.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "py_modules"))
 
-import decky  # noqa: E402  (nur unter Decky Loader vorhanden)
+import decky  # noqa: E402  (only available under Decky Loader)
 
-from x360w import actions, cleanup, controls, discovery, poweroff_unit, shutdown, view  # noqa: E402
+from x360w import actions, cleanup, controls, discovery, error_codes, poweroff_unit, shutdown, view  # noqa: E402
 from x360w.battery_cache import BatteryCache  # noqa: E402
 from x360w.service import MonitorService  # noqa: E402
 
 REFRESH_INTERVAL_S = 5.0
-STARTUP_QUERY_DELAY_S = 1.0  # kurze Pause nach dem Start, damit Decky fertig laden kann
+STARTUP_QUERY_DELAY_S = 1.0  # short pause after start so Decky can finish loading
 QUERY_BUSY_RETRIES = 5
 QUERY_BUSY_WAIT_S = 0.5
 PACKAGE_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "py_modules" / "x360w"
@@ -39,6 +45,16 @@ def _log(level: str, message: str) -> None:
     logger = getattr(decky, "logger", None)
     if logger is not None:
         getattr(logger, level)(message)
+
+
+def _error(message: str, code: Optional[str] = None, detail: Optional[str] = None) -> dict:
+    """Failure result: English `message`, optional `code` and `detail` for the frontend to translate."""
+    result: dict = {"ok": False, "error": message}
+    if code:
+        result["code"] = code
+        if detail:
+            result["detail"] = detail
+    return result
 
 
 def _settings_path() -> str:
@@ -54,9 +70,9 @@ class Plugin:
     startup_task = None
     unit_task = None
     batteries: BatteryCache
-    unit_error = None  # letzter Fehler beim Einrichten des Dienstes (Text) oder None
+    unit_error = None  # last error while setting up the service (text) or None
 
-    # -- Einstellungen ------------------------------------------------------
+    # -- Settings -----------------------------------------------------------
 
     def _load_settings(self) -> dict:
         try:
@@ -73,7 +89,7 @@ class Plugin:
             json.dump(data, handle)
 
     def _remember_auto_poweroff(self) -> None:
-        """Merkt sich beim ersten Ändern den Ausgangswert, damit das Entfernen ihn wiederherstellen kann."""
+        """On the first change, remembers the initial value so removal can restore it."""
         settings = self._load_settings()
         if "original_auto_poweroff" in settings:
             return
@@ -84,9 +100,9 @@ class Plugin:
         try:
             self._save_settings(settings)
         except OSError as exc:
-            _log("error", f"Ausgangswert nicht gespeichert: {exc!r}")
+            _log("error", f"Initial value not saved: {exc!r}")
 
-    # -- Lebenszyklus -------------------------------------------------------
+    # -- Lifecycle ----------------------------------------------------------
 
     def _apply_auto_poweroff(self, enabled: bool) -> None:
         self._remember_auto_poweroff()
@@ -99,62 +115,62 @@ class Plugin:
         settings = self._load_settings()
         if isinstance(settings.get("auto_poweroff"), bool):
             try:
-                self._apply_auto_poweroff(settings["auto_poweroff"])  # Kernelparameter ist nach Neustart zurückgesetzt
+                self._apply_auto_poweroff(settings["auto_poweroff"])  # the kernel parameter is reset after a reboot
             except (ValueError, OSError) as exc:
-                _log("error", f"auto_poweroff nicht angewendet: {exc!r}")
+                _log("error", f"auto_poweroff not applied: {exc!r}")
         if settings.get("monitor_enabled") is True:
             await asyncio.to_thread(self.service.enable)
         self.refresh_task = asyncio.get_event_loop().create_task(self._refresh_loop())
         self.startup_task = asyncio.get_event_loop().create_task(self._startup_battery_query())
         self.unit_task = asyncio.get_event_loop().create_task(self._sync_unit())
-        _log("info", "x360w geladen")
+        _log("info", "x360w loaded")
 
     async def _sync_unit(self) -> None:
-        """Gleicht den Dienst mit der Einstellung ab: Option an = Dienst vorhanden und aktuell, aus = Dienst weg.
+        """Reconciles the service with the setting: option on = service present and current, off = service gone.
 
-        Die Einstellung ist maßgeblich. Ohne diesen Abgleich bliebe ein Dienst zurück, wenn die Einstellungen
-        verloren gehen (z. B. nach dem Neuinstallieren), und ein Plugin-Update brächte das Programm des Dienstes
-        nicht auf den neuen Stand.
+        The setting is authoritative. Without this reconciliation a service would be left behind when the
+        settings are lost (e.g. after reinstalling), and a plugin update would not bring the service's
+        program up to date.
         """
         try:
-            enabled = self._load_settings().get("poweroff_on_shutdown") is True  # aktuell lesen, nicht beim Start merken
+            enabled = self._load_settings().get("poweroff_on_shutdown") is True  # read now, do not remember from start
             if enabled:
                 result = await asyncio.to_thread(self._install_unit)
-                self.unit_error = None if result.get("ok") else result.get("error", "Fehler")
+                self.unit_error = None if result.get("ok") else result.get("error", "Unknown error")
                 if self.unit_error:
-                    _log("error", f"Dienst nicht eingerichtet: {self.unit_error}")
+                    _log("error", f"Service not set up: {self.unit_error}")
             elif await asyncio.to_thread(poweroff_unit.is_installed):
                 result = await asyncio.to_thread(poweroff_unit.uninstall)
-                _log("info", f"Dienst entfernt (Option ist aus): {result}")
+                _log("info", f"Service removed (option is off): {result}")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # darf das Plugin nie am Laden hindern
+        except Exception as exc:  # must never keep the plugin from loading
             self.unit_error = f"{type(exc).__name__}: {exc}"[:300]
-            _log("error", f"Abgleich des Dienstes fehlgeschlagen: {exc!r}")
+            _log("error", f"Service reconciliation failed: {exc!r}")
 
     def _install_unit(self) -> dict:
         return poweroff_unit.install(PACKAGE_DIR)
 
     async def _startup_battery_query(self):
-        """Fragt den Akku aller schon verbundenen Controller einmal ab.
+        """Queries the battery of all already connected controllers once.
 
-        Der Receiver meldet den Akku nur beim Verbinden; wer vor dem Plugin-Start verbunden war,
-        hätte sonst keinen Wert. Kosten: Jeder Controller verschwindet dabei nacheinander für ca. 3 s.
+        The receiver reports the battery only when a controller connects; anyone who was connected
+        before the plugin started would otherwise have no value. Cost: Each controller disappears in turn for about 3 s.
         """
         try:
             await asyncio.sleep(STARTUP_QUERY_DELAY_S)
             targets = await asyncio.to_thread(self._connected_targets)
-            _log("info", f"Akkuabfrage nach dem Start: {len(targets)} Controller {targets}")
+            _log("info", f"Battery query after start: {len(targets)} controllers {targets}")
             for bus, devnum, slot in targets:
                 result = await asyncio.to_thread(self._query_and_cache, bus, devnum, slot)
-                _log("info", f"Akkuabfrage Bus {bus} Gerät {devnum} Slot {slot + 1}: {result}")
+                _log("info", f"Battery query bus {bus} device {devnum} slot {slot + 1}: {result}")
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # darf das Plugin nie am Laden hindern
-            _log("error", f"Akkuabfrage nach dem Start fehlgeschlagen: {exc!r}")
+        except Exception as exc:  # must never keep the plugin from loading
+            _log("error", f"Battery query after start failed: {exc!r}")
 
     def _query_and_cache(self, bus: int, devnum: int, slot: int) -> dict:
-        """Akkuanfrage (wartet kurz, wenn gerade ein anderer Zugriff läuft) und Ergebnis merken."""
+        """Battery request (waits briefly if another access is running) and remembers the result."""
         for attempt in range(QUERY_BUSY_RETRIES + 1):
             result = actions.query_battery(bus, devnum, slot)
             if result.get("error") != actions.BUSY_ERROR or attempt == QUERY_BUSY_RETRIES:
@@ -169,44 +185,43 @@ class Plugin:
             await asyncio.sleep(REFRESH_INTERVAL_S)
             try:
                 await asyncio.to_thread(self.service.refresh)
-            except Exception as exc:  # Schleife darf nie sterben
-                _log("error", f"refresh fehlgeschlagen: {exc!r}")
+            except Exception as exc:  # the loop must never die
+                _log("error", f"refresh failed: {exc!r}")
 
     async def _unload(self):
         for task in (self.refresh_task, self.startup_task, self.unit_task):
             if task is not None:
                 task.cancel()
         await asyncio.to_thread(self.service.disable)
-        _log("info", "x360w entladen")
+        _log("info", "x360w unloaded")
 
     async def _uninstall(self):
-        """Von Decky nach `_unload` beim Entfernen aufgerufen (auch beim Neuinstallieren per ZIP).
+        """Called by Decky after `_unload` on removal (also when reinstalling from a ZIP).
 
-        Stellt auto_poweroff wieder her, entfernt den systemd-Dienst und löscht die eigenen Ordner unter DECKY_HOME. Der
-        Plugin-Ordner selbst wird danach von Decky gelöscht. Nicht rückgängig gemacht werden
-        das geladene Kernelmodul usbmon (bis zum Neustart) und LED-Modi (bis zum nächsten
-        Verbinden des Controllers).
+        Restores auto_poweroff, removes the systemd service and deletes the plugin's own folders under
+        DECKY_HOME. Decky deletes the plugin folder itself afterwards. Not undone: the loaded kernel
+        module usbmon (until reboot) and LED modes (until the controller connects the next time).
         """
         try:
             original = self._load_settings().get("original_auto_poweroff")
             if cleanup.restore_auto_poweroff(original):
-                _log("info", "auto_poweroff auf den ursprünglichen Wert zurückgesetzt")
+                _log("info", "auto_poweroff reset to its original value")
         except (OSError, ValueError) as exc:
-            _log("error", f"auto_poweroff nicht zurückgesetzt: {exc!r}")
+            _log("error", f"auto_poweroff not reset: {exc!r}")
         try:
-            result = await asyncio.to_thread(poweroff_unit.uninstall)  # auch wenn die Option aus ist: ein Rest soll nicht liegen bleiben
-            _log("info", f"Dienst entfernt: {result}")
-        except Exception as exc:  # darf das Entfernen der Ordner nicht verhindern
-            _log("error", f"Dienst nicht entfernt: {exc!r}")
+            result = await asyncio.to_thread(poweroff_unit.uninstall)  # even if the option is off: leave no remnant behind
+            _log("info", f"Service removed: {result}")
+        except Exception as exc:  # must not keep the folders from being removed
+            _log("error", f"Service not removed: {exc!r}")
         home = getattr(decky, "DECKY_HOME", None)
-        _log("info", "x360w wird entfernt")
+        _log("info", "x360w is being removed")
         for attr in ("DECKY_PLUGIN_SETTINGS_DIR", "DECKY_PLUGIN_RUNTIME_DIR", "DECKY_PLUGIN_LOG_DIR"):
             try:
                 cleanup.remove_plugin_dir(getattr(decky, attr, None), home)
             except OSError as exc:
-                _log("error", f"{attr} nicht gelöscht: {exc!r}")
+                _log("error", f"{attr} not deleted: {exc!r}")
 
-    # -- Abfragen -----------------------------------------------------------
+    # -- Queries ------------------------------------------------------------
 
     async def get_receivers(self) -> list:
         return [r.to_dict() for r in await asyncio.to_thread(self.service.refresh)]
@@ -251,17 +266,17 @@ class Plugin:
     async def get_status(self) -> dict:
         return await asyncio.to_thread(self._build_status)
 
-    # -- Aktionen -----------------------------------------------------------
+    # -- Actions ------------------------------------------------------------
 
     async def set_monitor_enabled(self, enabled: bool) -> dict:
         if not isinstance(enabled, bool):
-            return {"ok": False, "error": "enabled muss ein Wahrheitswert sein"}
+            return _error("enabled must be a boolean")
         settings = self._load_settings()
         settings["monitor_enabled"] = enabled
         try:
             self._save_settings(settings)
         except OSError as exc:
-            _log("error", f"Einstellung nicht gespeichert: {exc!r}")
+            _log("error", f"Setting not saved: {exc!r}")
         if enabled:
             await asyncio.to_thread(self.service.enable)
         else:
@@ -271,91 +286,95 @@ class Plugin:
     async def set_led(self, name: str, mode: int) -> dict:
         try:
             controls.set_led_mode(name, mode)
+        except FileNotFoundError as exc:  # the LED only exists while the controller is connected
+            return _error(str(exc), error_codes.LED_MISSING)
         except (ValueError, OSError) as exc:
-            return {"ok": False, "error": str(exc)}
+            return _error(str(exc))
         return {"ok": True}
 
     async def reset_led(self, name: str) -> dict:
         try:
             controls.reset_led(name)
+        except FileNotFoundError as exc:
+            return _error(str(exc), error_codes.LED_MISSING)
         except (ValueError, OSError) as exc:
-            return {"ok": False, "error": str(exc)}
+            return _error(str(exc))
         return {"ok": True}
 
     async def set_auto_poweroff(self, enabled: bool) -> dict:
-        """Standby: Controller ausschalten (Kernelparameter xpad.auto_poweroff). Wird gespeichert und beim Start erneut gesetzt."""
+        """Standby: turn controllers off (kernel parameter xpad.auto_poweroff). Saved and set again on start."""
         try:
             self._apply_auto_poweroff(enabled)
         except (ValueError, OSError) as exc:
-            return {"ok": False, "error": str(exc)}
+            return _error(str(exc))
         settings = self._load_settings()
         settings["auto_poweroff"] = enabled
         try:
             self._save_settings(settings)
         except OSError as exc:
-            _log("error", f"Einstellung nicht gespeichert: {exc!r}")
+            _log("error", f"Setting not saved: {exc!r}")
         return {"ok": True}
 
     async def set_poweroff_on_shutdown(self, enabled: bool) -> dict:
-        """Herunterfahren: Controller ausschalten, wenn das System herunterfährt (gilt auch beim Neustart).
+        """Shutdown: turn controllers off when the system shuts down (also applies on reboot).
 
-        Einschalten richtet den systemd-Dienst ein (Dateien unter /etc/systemd/system und /var/lib), Ausschalten
-        entfernt ihn wieder. Schlägt das fehl, bleibt die Option aus und der Fehler wird angezeigt.
+        Switching on sets up the systemd service (files under /etc/systemd/system and /var/lib), switching
+        off removes it again. If that fails, the option stays off and the error is shown.
         """
         if not isinstance(enabled, bool):
-            return {"ok": False, "error": "enabled muss ein Wahrheitswert sein"}
+            return _error("enabled must be a boolean")
         if enabled:
             result = await asyncio.to_thread(self._install_unit)
             if not result.get("ok"):
-                self.unit_error = result.get("error", "Fehler")
-                return {"ok": False, "error": f"Dienst nicht eingerichtet: {self.unit_error}"}
+                self.unit_error = result.get("error", "Unknown error")
+                return _error(f"Service not set up: {self.unit_error}", error_codes.UNIT_SETUP_FAILED, self.unit_error)
             self.unit_error = None
         else:
             result = await asyncio.to_thread(poweroff_unit.uninstall)
             if not result.get("ok"):
-                _log("error", f"Dienst nicht vollständig entfernt: {result}")
+                _log("error", f"Service not removed completely: {result}")
         settings = self._load_settings()
         settings["poweroff_on_shutdown"] = enabled
         try:
             self._save_settings(settings)
         except OSError as exc:
-            return {"ok": False, "error": f"Einstellung nicht gespeichert: {exc}"}
+            return _error(f"Setting not saved: {exc}", error_codes.SETTINGS_NOT_SAVED, str(exc))
         if not enabled and not result.get("ok"):
-            return {"ok": False, "error": "Dienst nicht vollständig entfernt: " + "; ".join(result.get("errors", []))}
+            detail = "; ".join(result.get("errors", []))
+            return _error(f"Service not removed completely: {detail}", error_codes.UNIT_REMOVAL_FAILED, detail)
         return {"ok": True}
 
     async def power_off_all(self) -> dict:
-        """Schaltet alle verbundenen Controller aus (derselbe Weg wie beim Herunterfahren; zum Ausprobieren)."""
+        """Turns off all connected controllers (same path as on shutdown; for trying it out)."""
         targets = await asyncio.to_thread(self._all_targets)
         if not targets:
             return {"ok": True, "sent": 0, "confirmed": 0, "errors": []}
         return await asyncio.to_thread(shutdown.power_off_targets, targets)
 
-    # -- Aktionen mit kurzem Zugriff auf einen Slot --------------------------------
+    # -- Actions with short access to a slot ------------------------------------
 
-    async def _slot_target_error(self, bus, devnum, slot):
-        """Nur bekannte Receiver und gültige Slots; das Backend läuft als root."""
+    async def _slot_target_error(self, bus, devnum, slot) -> Optional[dict]:
+        """Only known receivers and valid slots; the backend runs as root."""
         for value in (bus, devnum, slot):
             if isinstance(value, bool) or not isinstance(value, int):
-                return "Ungültige Angabe"
+                return _error("Invalid argument")
         if not 0 <= slot <= 3:
-            return "Slot muss 1 bis 4 sein"
+            return _error("Slot must be 1 to 4")
         receivers = await asyncio.to_thread(self.service.refresh)
         if not any(r.bus == bus and r.devnum == devnum for r in receivers):
-            return "Receiver nicht gefunden"
+            return _error("Receiver not found", error_codes.RECEIVER_NOT_FOUND)
         return None
 
     async def query_battery(self, bus: int, devnum: int, slot: int) -> dict:
-        """Akkuanfrage an einen Slot (Slot 0..3). Trennt den Controller dieses Slots kurz."""
+        """Battery request to a slot (slot 0..3). Briefly disconnects this slot's controller."""
         error = await self._slot_target_error(bus, devnum, slot)
         if error:
-            return {"ok": False, "error": error}
+            return error
         return await asyncio.to_thread(self._query_and_cache, bus, devnum, slot)
 
     async def power_off(self, bus: int, devnum: int, slot: int) -> dict:
-        """Schaltet den Controller eines Slots (0..3) aus."""
+        """Turns off the controller of a slot (0..3)."""
         error = await self._slot_target_error(bus, devnum, slot)
         if error:
-            return {"ok": False, "error": error}
+            return error
         return await asyncio.to_thread(actions.power_off, bus, devnum, slot)
-

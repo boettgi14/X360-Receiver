@@ -1,14 +1,17 @@
-"""Aktionen mit kurzem Zugriff auf einen Slot: Akku abfragen, Controller ausschalten.
+"""Actions with short access to one slot: query the battery, turn the controller off.
 
-An Hardware gesehen (2026-11-05, Mitschnitt und Terminal, ein Receiver 045E:0719, ein Gamepad):
-  - Akkuanfrage `00 00 00 40` wird binnen ca. 30 ms mit einem Statuspaket beantwortet.
-  - `00 00 08 C0` schaltet den Controller aus (Statuspaket mit Power-State 0, dann Trennung).
-  - `xpad` bindet die Schnittstelle nach dem Zugriff wieder.
-Unbekannt: ob die Akkuanfrage den Controller frisch befragt oder der Receiver aus einem
-Zwischenspeicher antwortet (Test: Anfrage bei ausgeschaltetem Controller).
+Seen on hardware (2026-11-05, capture and terminal, one receiver 045E:0719, one gamepad):
+  - The battery request `00 00 00 40` is answered with a state packet within about 30 ms.
+  - `00 00 08 C0` turns the controller off (state packet with power state 0, then disconnect).
+  - `xpad` re-binds the interface after the access.
+Unknown: whether the battery request polls the controller afresh or the receiver answers from a
+cache (test: request while the controller is off).
 
-Kosten: Der Controller des Slots verschwindet für einige Sekunden aus dem System (Steam sieht
-ihn gehen und wiederkommen). Andere Slots bleiben unberührt.
+Cost: The slot's controller disappears from the system for a few seconds (Steam sees it leave
+and come back). Other slots are untouched.
+
+Results are plain dicts. On failure: {"ok": False, "error": <English text>} plus an optional
+"code" (and "detail") that the frontend translates.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from __future__ import annotations
 import threading
 from typing import Callable, List, Optional
 
+from . import error_codes
 from .protocol import (
     InputReport,
     StateReport,
@@ -28,7 +32,8 @@ DRAIN_S = 0.3
 BATTERY_LISTEN_S = 1.0
 POWEROFF_LISTEN_S = 0.6
 
-BUSY_ERROR = "Es läuft bereits ein Zugriff auf den Receiver."
+BUSY_ERROR = "Another access to the receiver is already running."
+BUSY_CODE = error_codes.BUSY
 
 _lock = threading.Lock()
 
@@ -54,24 +59,35 @@ def _states(packets: List[tuple]) -> List[StateReport]:
     return found
 
 
+def _failure(exc: Exception) -> dict:
+    result = {"ok": False, "error": str(exc)}
+    code: Optional[str] = getattr(exc, "code", None)
+    if code:
+        result["code"] = code
+        detail = getattr(exc, "detail", None)
+        if detail:
+            result["detail"] = detail
+    return result
+
+
 def _run(bus: int, devnum: int, slot: int, backend_factory: Callable[[], Backend], body) -> dict:
     if not _lock.acquire(blocking=False):
-        return {"ok": False, "error": BUSY_ERROR}
+        return {"ok": False, "error": BUSY_ERROR, "code": BUSY_CODE}
     try:
         with SlotSession(backend_factory(), bus, devnum, slot) as session:
             return body(session)
     except (UsbError, ValueError, OSError) as exc:
-        return {"ok": False, "error": str(exc)}
+        return _failure(exc)
     finally:
         _lock.release()
 
 
 def query_battery(bus: int, devnum: int, slot: int,
                   backend_factory: Callable[[], Backend] = LibusbBackend) -> dict:
-    """Sendet die Akkuanfrage. `state` ist None, wenn keine Antwort kam (z. B. Controller aus)."""
+    """Sends the battery request. `state` is None if no answer came (e.g. controller off)."""
 
     def body(session: SlotSession) -> dict:
-        session.listen(DRAIN_S)  # liegengebliebene Pakete verwerfen
+        session.listen(DRAIN_S)  # discard leftover packets
         session.send(build_battery_request())
         states = _states(session.listen(BATTERY_LISTEN_S))
         return {"ok": True, "state": _state_dict(states[0]) if states else None}
@@ -81,7 +97,7 @@ def query_battery(bus: int, devnum: int, slot: int,
 
 def power_off(bus: int, devnum: int, slot: int,
               backend_factory: Callable[[], Backend] = LibusbBackend) -> dict:
-    """Schaltet den Controller des Slots aus. Bestätigt, wenn ein Statuspaket mit Power-State 0 kommt."""
+    """Turns off the slot's controller. Confirmed when a state packet with power state 0 arrives."""
 
     def body(session: SlotSession) -> dict:
         session.listen(DRAIN_S)

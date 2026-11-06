@@ -1,13 +1,13 @@
-"""Decoder und Encoder für das Protokoll des Xbox 360 Wireless Gaming Receivers.
+"""Decoder and encoder for the protocol of the Xbox 360 Wireless Gaming Receiver.
 
-Quellen (siehe docs/PROTOCOL.md für Details und Vertrauensgrad):
+Sources (see docs/PROTOCOL.md for details and confidence levels):
   - x360-research (InvoxiPlayGames): hardware/usb-protocols/argon.md
   - xboxdrv: PROTOCOL
-  - Linux-Kernel: drivers/input/joystick/xpad.c
+  - Linux kernel: drivers/input/joystick/xpad.c
 
-Alles in diesem Modul arbeitet auf rohen Bytes. Es gibt keinen USB-Zugriff.
-Bitfeld-Reihenfolge (LSB zuerst) ist eine Annahme aus der C-Struct der Quelle
-und muss mit echter Hardware bestätigt werden (Phase 0 im PLAN.md).
+Everything in this module works on raw bytes. There is no USB access.
+The bit-field order (LSB first) is an assumption from the source's C struct
+and has to be confirmed on real hardware (phase 0 in PLAN.md).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from typing import Optional, Union
 
 
 class BatteryLevel(IntEnum):
-    """Vier Stufen wie bei XInput (BATTERY_LEVEL_*). Zuordnung 0..3 ist angenommen."""
+    """Four levels like XInput (BATTERY_LEVEL_*). The mapping of 0..3 is assumed."""
 
     EMPTY = 0
     LOW = 1
@@ -26,8 +26,9 @@ class BatteryLevel(IntEnum):
     FULL = 3
 
 
-# XInput-Subtypen laut Microsoft-Dokumentation (XINPUT_CAPABILITIES.SubType).
-# In dieser Session NICHT gegen die Doku geprüft, daher Hypothese.
+# XInput subtypes according to the Microsoft documentation (XINPUT_CAPABILITIES.SubType).
+# NOT checked against the documentation in this session, hence a hypothesis.
+# The names are English; the frontend shows translated names keyed by subtype number.
 SUBTYPE_NAMES = {
     0x01: "Gamepad",
     0x02: "Wheel",
@@ -46,7 +47,7 @@ HEADER_LEN = 5
 
 @dataclass(frozen=True)
 class ConnectionEvent:
-    """Paket-ID 0x08: Verbindungsstatus des Slots."""
+    """Packet ID 0x08: connection status of the slot."""
 
     controller: bool
     headset: bool
@@ -54,21 +55,21 @@ class ConnectionEvent:
 
 @dataclass(frozen=True)
 class StateReport:
-    """Typ 0x00 mit Marker 0x1 im oberen Nibble von Byte 3: Status des Controllers."""
+    """Type 0x00 with marker 0x1 in the upper nibble of byte 3: state of the controller."""
 
     vibration_level: int  # 0..3
     headset: bool
     chatpad: bool
-    battery_type: int  # roh 0..3, Bedeutung noch zu klären
+    battery_type: int  # raw 0..3, meaning still to be clarified
     only_mic: bool
-    power_state: int  # roh 0..3
+    power_state: int  # raw 0..3
     battery_level: BatteryLevel
     unknown_bit: int = 0
 
 
 @dataclass(frozen=True)
 class InputReport:
-    """Typ 0x01 oder 0x03: Eingabedaten (Tasten, Sticks)."""
+    """Type 0x01 or 0x03: input data (buttons, sticks)."""
 
     buttons: int
     left_trigger: int
@@ -77,14 +78,14 @@ class InputReport:
     left_stick_y: int
     right_stick_x: int
     right_stick_y: int
-    # Die zwei Header-Datenbytes können auch in Eingabepaketen einen Zustand tragen
-    # (am Gerät gesehen: erstes Paket nach dem Verbinden, Header 13 A2).
+    # The two header data bytes can also carry a state in input packets
+    # (seen on the device: first packet after connecting, header 13 A2).
     state: Optional["StateReport"] = None
 
 
 @dataclass(frozen=True)
 class CapabilitiesReport:
-    """Typ 0x05: Fähigkeiten (XInput-Capabilities-Struktur)."""
+    """Type 0x05: capabilities (XInput capabilities structure)."""
 
     buttons: int
     left_motor: int
@@ -94,7 +95,7 @@ class CapabilitiesReport:
 
 @dataclass(frozen=True)
 class LinkReport:
-    """Typ 0x0F: Geräteinformation beim Verbinden."""
+    """Type 0x0F: device information on connecting."""
 
     device_id: int
     device_type: int
@@ -102,13 +103,13 @@ class LinkReport:
     state: Optional[StateReport]
     protocol: int
     vendor_id_data: bytes
-    vendor_id_guess: int  # Formel aus der Quelle, ungeprüft
+    vendor_id_guess: int  # formula from the source, unchecked
     subtype: int
     raw: bytes = b""
 
     @property
     def subtype_name(self) -> str:
-        return SUBTYPE_NAMES.get(self.subtype, f"Unbekannt (0x{self.subtype:02X})")
+        return SUBTYPE_NAMES.get(self.subtype, f"Unknown (0x{self.subtype:02X})")
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ def _s16(lo: int, hi: int) -> int:
 
 
 def _decode_state_bytes(b0: int, b1: int) -> Optional[StateReport]:
-    """Dekodiert die zwei Zustandsbytes. Gültig nur, wenn das obere Nibble von b0 == 0x1 ist."""
+    """Decodes the two state bytes. Valid only if the upper nibble of b0 == 0x1."""
     if (b0 & 0xF0) != 0x10:
         return None
     return StateReport(
@@ -150,13 +151,13 @@ def _decode_state_bytes(b0: int, b1: int) -> Optional[StateReport]:
 
 
 def decode_in_packet(data: bytes) -> Optional[Report]:
-    """Dekodiert ein IN-Paket vom Receiver. Gibt None zurück, wenn es zu kurz ist."""
+    """Decodes an IN packet from the receiver. Returns None if it is too short."""
     if len(data) < 2:
         return None
 
     packet_id, packet_type = data[0], data[1]
 
-    # Verbindungspaket: ID 0x08, Daten im "Typ"-Byte
+    # Connection packet: ID 0x08, data in the "type" byte
     if packet_id == 0x08:
         return ConnectionEvent(
             controller=bool(packet_type & 0x80),
@@ -221,8 +222,8 @@ def decode_in_packet(data: bytes) -> Optional[Report]:
 
 
 # ---------------------------------------------------------------------------
-# Ausgabe-Befehle (OUT-Endpunkt des jeweiligen Slots), jeweils 12 Bytes.
-# Senden erfordert exklusiven USB-Zugriff oder einen Kernel-Patch, siehe PLAN.md.
+# Output commands (OUT endpoint of the respective slot), 12 bytes each.
+# Sending requires exclusive USB access or a kernel patch, see PLAN.md.
 # ---------------------------------------------------------------------------
 
 
@@ -231,7 +232,7 @@ def _out(b2: int, b3: int, b1: int = 0x00, b0: int = 0x00) -> bytes:
 
 
 def build_status_request() -> bytes:
-    """Fordert Verbindungsstatus an (löst erneute Connection/Link-Pakete aus)."""
+    """Requests the connection status (triggers new connection/link packets)."""
     return bytes([0x08, 0x00, 0x0F, 0xC0]) + bytes(8)
 
 
@@ -244,19 +245,19 @@ def build_capabilities_request() -> bytes:
 
 
 def build_led(mode: int) -> bytes:
-    """LED-Modus 0..15 (0 aus, 2..5 blinkt Spieler 1..4, 6..9 dauerhaft)."""
+    """LED mode 0..15 (0 off, 2..5 player 1..4 blinking, 6..9 steady)."""
     if not 0 <= mode <= 15:
-        raise ValueError("LED-Modus muss zwischen 0 und 15 liegen")
+        raise ValueError("LED mode must be between 0 and 15")
     return _out(0x08, 0x40 + mode)
 
 
 def build_poweroff() -> bytes:
-    """Schaltet den Controller aus (Power-State 0)."""
+    """Turns the controller off (power state 0)."""
     return _out(0x08, 0xC0)
 
 
 def build_rumble(left: int, right: int) -> bytes:
-    """Rumble: left = große Masse (strong), right = kleine Masse (weak), je 0..255."""
+    """Rumble: left = large mass (strong), right = small mass (weak), each 0..255."""
     if not (0 <= left <= 255 and 0 <= right <= 255):
-        raise ValueError("Rumble-Werte müssen zwischen 0 und 255 liegen")
+        raise ValueError("Rumble values must be between 0 and 255")
     return bytes([0x00, 0x01, 0x0F, 0xC0, 0x00, left, right]) + bytes(5)

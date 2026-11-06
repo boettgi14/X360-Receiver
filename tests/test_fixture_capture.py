@@ -1,8 +1,8 @@
-"""Tests gegen einen echten Mitschnitt (Bazzite, Receiver 045e:0719, ein Gamepad).
+"""Tests against a real capture (Bazzite, receiver 045e:0719, one gamepad).
 
-Aufgezeichnet am 2026-11-04 über usbmon, gefiltert auf den Receiver. Enthält:
-Trennen, erneutes Verbinden, Link-Report, Statuspaket und Tastendrücke.
-Nicht enthalten: Guide-Taste, Start/Back, Ausschalten, Akkuwechsel.
+Recorded on 2026-11-04 through usbmon, filtered to the receiver. Contains:
+disconnecting, reconnecting, link report, state packet and button presses.
+Not contained: Guide button, Start/Back, turning off, battery change.
 """
 
 import sys
@@ -60,13 +60,13 @@ class CaptureTests(unittest.TestCase):
         states = [rep for _, rep in self.incoming if isinstance(rep, StateReport)]
         self.assertEqual(len(states), 1)
         state = states[0]
-        self.assertEqual(state.battery_level, BatteryLevel.MEDIUM)  # Zuordnung ungeprüft
+        self.assertEqual(state.battery_level, BatteryLevel.MEDIUM)  # mapping unchecked
         self.assertEqual(state.battery_type, 1)
         self.assertEqual(state.power_state, 2)
         self.assertFalse(state.headset or state.chatpad)
 
     def test_xpad_led_commands_match_our_encoder(self):
-        # xpad sendet beim Trennen LED 0 (aus) und beim Verbinden LED 2 (Slot 1)
+        # xpad sends LED 0 (off) on disconnect and LED 2 (slot 1) on connect
         self.assertEqual([r.data for r in self.outgoing], [build_led(0), build_led(2)])
 
     def test_button_masks_follow_xinput_layout(self):

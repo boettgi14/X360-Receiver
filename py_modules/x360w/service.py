@@ -1,7 +1,7 @@
-"""Verbindet Receiver-Erkennung (sysfs) und usbmon-Leser (je Bus ein Thread).
+"""Connects receiver discovery (sysfs) and the usbmon reader (one thread per bus).
 
-`refresh()` wird regelmäßig aufgerufen (Hot-Plug, neue Geräteadresse nach erneutem Einstecken).
-Der Monitor ist abschaltbar; ausgeschaltet wird kein USB-Verkehr gelesen.
+`refresh()` is called regularly (hot-plug, new device address after re-plugging).
+The monitor can be switched off; while it is off no USB traffic is read.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class MonitorService:
         self._find = find
         self._template = usbmon_template
         self._clock = clock
-        self._ensure = ensure or ensure_usbmon  # zur Laufzeit gebunden, damit Tests ersetzen können
+        self._ensure = ensure or ensure_usbmon  # bound at run time so tests can replace it
         self.setup_error: Optional[str] = None
         self._lock = threading.RLock()
         self._enabled = False
@@ -37,7 +37,7 @@ class MonitorService:
         self._retry_at: Dict[int, float] = {}
         self._receivers: List[ReceiverInfo] = []
 
-    # -- Steuerung ----------------------------------------------------------
+    # -- Control ------------------------------------------------------------
 
     def enable(self) -> None:
         self.setup_error = self._ensure(self._template)
@@ -94,7 +94,7 @@ class MonitorService:
                     reader.start()
         return receivers
 
-    # -- Abfrage ------------------------------------------------------------
+    # -- Queries ------------------------------------------------------------
 
     def receivers(self) -> List[ReceiverInfo]:
         with self._lock:

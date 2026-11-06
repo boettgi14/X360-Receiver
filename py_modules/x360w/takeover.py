@@ -1,15 +1,15 @@
-"""Kurzer, kontrollierter Zugriff auf einen Controller-Slot über libusb (ctypes).
+"""Short, controlled access to a controller slot through libusb (ctypes).
 
-Ablauf: Die Schnittstelle des Slots wird mit automatischem Lösen des Kernel-Treibers belegt
-(`xpad` gibt sie frei), es werden Befehle gesendet und Antworten gelesen, danach gibt libusb die
-Schnittstelle frei und bindet `xpad` wieder (`libusb_set_auto_detach_kernel_driver`). Während
-dieser Zeit (Sekunden) liefert dieser Slot keine Eingaben an Steam. Andere Slots sind nicht betroffen.
+Procedure: the slot's interface is claimed with automatic detaching of the kernel driver (`xpad`
+releases it), commands are sent and replies read, then libusb releases the interface and re-attaches
+`xpad` (`libusb_set_auto_detach_kernel_driver`). During this time (seconds) this slot delivers no
+input to Steam. Other slots are not affected.
 
-STATUS: Mit `tools/probe_takeover.py` an Hardware bestätigt (2026-11-05, ein Receiver, ein Gamepad):
-Lösen von xpad, Senden, Lesen, Freigabe und erneutes Binden funktionieren. Im Decky-Prozess
-(`x360w.actions`) noch nicht erprobt. Die Logik ist zusätzlich mit einem Attrappen-Backend getestet.
+STATUS: Confirmed on hardware with `tools/probe_takeover.py` (2026-11-05, one receiver, one gamepad):
+detaching xpad, sending, reading, releasing and re-binding xpad all work. Not yet tried inside the
+Decky process (`x360w.actions`). The logic is additionally tested with a dummy backend.
 
-Schreibt nur an Endpunkte des gewählten Slots und nur Befehle aus x360w.protocol.
+Writes only to endpoints of the chosen slot and only commands from x360w.protocol.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import ctypes.util
 import time
 from typing import Callable, List, Optional, Protocol, Tuple
 
+from .error_codes import LIBUSB_UNAVAILABLE
 from .protocol import decode_in_packet
 
 LIBUSB_ERROR_TIMEOUT = -7
@@ -28,7 +29,16 @@ VENDOR_MICROSOFT = 0x045E
 
 
 class UsbError(RuntimeError):
-    pass
+    """USB access failed.
+
+    `str(error)` is an English technical message. `code` and `detail` are optional and let the
+    frontend show a translated message for failures a user can act on (see `main.py`).
+    """
+
+    def __init__(self, message: str, code: Optional[str] = None, detail: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.detail = detail
 
 
 class Backend(Protocol):
@@ -41,9 +51,9 @@ class Backend(Protocol):
 
 
 def slot_endpoints(slot: int) -> Tuple[int, int, int]:
-    """(Schnittstelle, OUT-Endpunkt, IN-Endpunkt) für Slot 0..3."""
+    """(interface, OUT endpoint, IN endpoint) for slot 0..3."""
     if isinstance(slot, bool) or not isinstance(slot, int) or not 0 <= slot < SLOT_COUNT:
-        raise ValueError(f"Slot muss 0..{SLOT_COUNT - 1} sein, nicht {slot!r}")
+        raise ValueError(f"Slot must be 0..{SLOT_COUNT - 1}, not {slot!r}")
     return 2 * slot, 0x01 + 2 * slot, 0x81 + 2 * slot
 
 
@@ -53,7 +63,7 @@ class LibusbBackend:
         try:
             self._lib = ctypes.CDLL(name)
         except OSError as exc:
-            raise UsbError(f"libusb nicht ladbar: {exc}") from exc
+            raise UsbError(f"libusb could not be loaded: {exc}", LIBUSB_UNAVAILABLE, str(exc)) from exc
         lib = self._lib
         lib.libusb_init.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
         lib.libusb_exit.argtypes = [ctypes.c_void_p]
@@ -100,7 +110,7 @@ class LibusbBackend:
                     return
         finally:
             lib.libusb_free_device_list(devices, 1)
-        raise UsbError(f"Gerät Bus {bus}, Adresse {address} nicht gefunden")
+        raise UsbError(f"Device on bus {bus}, address {address} not found")
 
     def claim(self, interface: int) -> None:
         self._check(self._lib.libusb_claim_interface(self._handle, interface), "claim_interface")
@@ -112,7 +122,7 @@ class LibusbBackend:
             "interrupt_write",
         )
         if done.value != len(data):
-            raise UsbError(f"interrupt_write: nur {done.value} von {len(data)} Bytes")
+            raise UsbError(f"interrupt_write: only {done.value} of {len(data)} bytes")
 
     def read(self, endpoint: int, length: int, timeout_ms: int) -> Optional[bytes]:
         buf = ctypes.create_string_buffer(length)
@@ -124,7 +134,7 @@ class LibusbBackend:
         return bytes(buf.raw[: done.value])
 
     def release(self, interface: int) -> None:
-        # Gibt die Schnittstelle frei; libusb bindet dabei den Kernel-Treiber wieder an.
+        # Releases the interface; libusb re-attaches the kernel driver in the process.
         self._check(self._lib.libusb_release_interface(self._handle, interface), "release_interface")
 
     def close(self) -> None:
@@ -137,7 +147,7 @@ class LibusbBackend:
 
 
 class SlotSession:
-    """Context-Manager: belegt einen Slot und gibt ihn garantiert wieder frei."""
+    """Context manager: claims a slot and is guaranteed to release it again."""
 
     def __init__(self, backend: Backend, bus: int, address: int, slot: int,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -178,11 +188,11 @@ class SlotSession:
 
     def send(self, packet: bytes, timeout_ms: int = 1000) -> None:
         if len(packet) != 12:
-            raise ValueError("Befehle haben 12 Byte")
+            raise ValueError("Commands are 12 bytes long")
         self._backend.write(self.out_ep, packet, timeout_ms)
 
     def listen(self, seconds: float, poll_ms: int = 100) -> List[Tuple[float, bytes, object]]:
-        """Liest IN-Pakete für `seconds`. Gibt (Sekunden seit Start, Rohdaten, Dekodiert) zurück."""
+        """Reads IN packets for `seconds`. Returns (seconds since start, raw data, decoded)."""
         start = self._clock()
         found: List[Tuple[float, bytes, object]] = []
         while self._clock() - start < seconds:

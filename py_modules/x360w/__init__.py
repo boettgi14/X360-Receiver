@@ -1,4 +1,4 @@
-"""x360w: Parser und Hilfsfunktionen für den Xbox 360 Wireless Gaming Receiver."""
+"""x360w: parser and helper functions for the Xbox 360 Wireless Gaming Receiver."""
 
 from .protocol import (  # noqa: F401
     BatteryLevel,

@@ -1,4 +1,4 @@
-"""Smoke-Test für main.py mit einem Attrappen-Modul `decky` (kein echter Decky Loader)."""
+"""Smoke test for main.py with a stand-in `decky` module (no real Decky Loader)."""
 
 import asyncio
 import importlib.util
@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT / "py_modules"))
 
 
 class FakeUnit:
-    """Ersatz für x360w.poweroff_unit in main.py: nie echte Dateien unter /etc oder /var, nie echtes systemctl."""
+    """Stand-in for x360w.poweroff_unit in main.py: never real files under /etc or /var, never a real systemctl."""
 
     def __init__(self):
         self.calls = []
@@ -51,7 +51,7 @@ class FakeUnit:
 def load_main(settings_dir, **attrs):
     import x360w.service
 
-    x360w.service.ensure_usbmon = lambda template: None  # nie echtes modprobe in Tests
+    x360w.service.ensure_usbmon = lambda template: None  # never a real modprobe in tests
     stub = types.ModuleType("decky")
     stub.logger = logging.getLogger("decky-stub")
     stub.DECKY_SETTINGS_DIR = settings_dir
@@ -61,7 +61,7 @@ def load_main(settings_dir, **attrs):
     spec = importlib.util.spec_from_file_location("x360w_main", ROOT / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.poweroff_unit = module.fake_unit = FakeUnit()  # nur in main.py ersetzt, das echte Modul bleibt unberührt
+    module.poweroff_unit = module.fake_unit = FakeUnit()  # replaced in main.py only, the real module stays untouched
     return module
 
 
@@ -82,18 +82,18 @@ class BackendTests(unittest.TestCase):
                 self.assertFalse(status["settings"]["poweroff_on_shutdown"])
                 self.assertFalse(status["monitor"]["enabled"])
                 self.assertEqual(len(status["led_modes"]), 16)
-                json.dumps(status)  # muss serialisierbar sein
+                json.dumps(status)  # must be serializable
 
                 self.assertFalse((await plugin.set_led("../x", 1))["ok"])
                 self.assertFalse((await plugin.set_led("xpad0", 99))["ok"])
-                self.assertFalse((await plugin.set_auto_poweroff("ja"))["ok"])
-                self.assertFalse((await plugin.set_monitor_enabled("ja"))["ok"])
+                self.assertFalse((await plugin.set_auto_poweroff("yes"))["ok"])
+                self.assertFalse((await plugin.set_monitor_enabled("yes"))["ok"])
 
                 self.assertTrue((await plugin.set_monitor_enabled(True))["ok"])
                 self.assertTrue((await plugin.get_status())["monitor"]["enabled"])
                 saved = json.loads((Path(tmp) / "x360w.json").read_text())
                 self.assertIs(saved["monitor_enabled"], True)
-                await asyncio.sleep(0.2)  # Aktualisierungsschleife läuft
+                await asyncio.sleep(0.2)  # the refresh loop runs
                 self.assertTrue((await plugin.set_monitor_enabled(False))["ok"])
             finally:
                 await plugin._unload()
@@ -117,11 +117,14 @@ class BackendTests(unittest.TestCase):
             plugin = main.Plugin()
             await plugin._main()
             try:
-                # in dieser Umgebung gibt es keinen Receiver: nichts darf an USB gehen
-                self.assertEqual((await plugin.query_battery(1, 2, 0))["error"], "Receiver nicht gefunden")
-                self.assertEqual((await plugin.power_off(1, 2, 7))["error"], "Slot muss 1 bis 4 sein")
-                self.assertEqual((await plugin.power_off("1", 2, 0))["error"], "Ungültige Angabe")
-                self.assertEqual((await plugin.power_off(True, 2, 0))["error"], "Ungültige Angabe")
+                # there is no receiver in this environment: nothing may go to USB
+                self.assertEqual(
+                    await plugin.query_battery(1, 2, 0),
+                    {"ok": False, "error": "Receiver not found", "code": "receiver_not_found"},
+                )
+                self.assertEqual((await plugin.power_off(1, 2, 7))["error"], "Slot must be 1 to 4")
+                self.assertEqual((await plugin.power_off("1", 2, 0))["error"], "Invalid argument")
+                self.assertEqual((await plugin.power_off(True, 2, 0))["error"], "Invalid argument")
                 self.assertEqual(calls, [])
 
                 from x360w.discovery import ReceiverInfo
@@ -130,6 +133,39 @@ class BackendTests(unittest.TestCase):
                 self.assertTrue((await plugin.query_battery(1, 2, 1))["ok"])
                 self.assertTrue((await plugin.power_off(1, 2, 3))["confirmed"])
                 self.assertEqual(calls, [("q", 1, 2, 1), ("p", 1, 2, 3)])
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_missing_led_reports_a_translatable_code(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                with mock.patch.object(main.controls, "LED_BASE", Path(tmp) / "no-leds"):
+                    for result in (await plugin.set_led("xpad0", 1), await plugin.reset_led("xpad0")):
+                        self.assertFalse(result["ok"])
+                        self.assertEqual(result["code"], "led_missing")
+                        self.assertIn("xpad0", result["error"])  # the English technical text stays as the fallback
+                    self.assertNotIn("code", await plugin.set_led("xpad0", 99))  # a programming error has no code
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_backend_sends_language_neutral_texts(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                status = await plugin.get_status()
+                self.assertTrue(all(text.isascii() for text in status["led_modes"].values()))
+                self.assertEqual(status["led_modes"]["0"], "off")
             finally:
                 await plugin._unload()
 
@@ -167,6 +203,7 @@ class OptionsAndViewTests(unittest.TestCase):
                     await plugin._unload()
             [receiver] = status["receivers"]
             self.assertEqual([c["slot"] for c in receiver["controllers"]], [0, 2])
+            self.assertIs(receiver["unofficial"], False)
             json.dumps(status)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -184,11 +221,11 @@ class OptionsAndViewTests(unittest.TestCase):
                 self.assertEqual(param.read_text().strip(), "N")
                 await plugin._unload()
 
-                param.write_text("Y\n")  # Neustart: Kernelparameter steht wieder auf dem Standard
+                param.write_text("Y\n")  # reboot: the kernel parameter is back at its default
                 plugin = main.Plugin()
                 await plugin._main()
                 try:
-                    self.assertEqual(param.read_text().strip(), "N")  # gespeicherte Wahl wieder angewendet
+                    self.assertEqual(param.read_text().strip(), "N")  # saved choice applied again
                     self.assertIs((await plugin.get_status())["settings"]["auto_poweroff"], False)
                 finally:
                     await plugin._unload()
@@ -205,7 +242,7 @@ class OptionsAndViewTests(unittest.TestCase):
             plugin = main.Plugin()
             await plugin._main()
             try:
-                self.assertFalse((await plugin.set_poweroff_on_shutdown("ja"))["ok"])
+                self.assertFalse((await plugin.set_poweroff_on_shutdown("yes"))["ok"])
                 self.assertFalse((await plugin.set_poweroff_on_shutdown(1))["ok"])
                 self.assertTrue((await plugin.set_poweroff_on_shutdown(True))["ok"])
                 self.assertTrue((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
@@ -243,7 +280,7 @@ class StartupBatteryTests(unittest.TestCase):
     STATE = {"battery_level": 2, "battery_type_raw": 1, "power_state_raw": 2, "vibration_level": 0}
 
     def _run(self, slots, query, monitor_enabled=False, delay=0.0, after=None):
-        """Startet das Plugin mit Attrappen; gibt (Aufrufe, Status nach dem Start) zurück."""
+        """Starts the plugin with stand-ins; returns (calls, status after the start)."""
         calls = []
         result = {}
 
@@ -264,7 +301,7 @@ class StartupBatteryTests(unittest.TestCase):
                     mock.patch.object(main.actions, "query_battery", fake_query), \
                     mock.patch.object(main.discovery, "find_receivers", lambda: [info]):
                 plugin = main.Plugin()
-                # Dienst findet unseren Attrappen-Receiver
+                # the service finds our stand-in receiver
                 orig_init = main.MonitorService.__init__
                 main.MonitorService.__init__ = lambda self, *a, **k: (orig_init(self, find=lambda: [info], *a, **k))
                 try:
@@ -286,9 +323,9 @@ class StartupBatteryTests(unittest.TestCase):
 
     def test_connected_controllers_are_queried_once_after_start(self):
         calls, status = self._run({0, 2}, lambda n: {"ok": True, "state": dict(self.STATE, battery_level=n)})
-        self.assertEqual(calls, [(1, 2, 0), (1, 2, 2)])  # nacheinander, jeder genau einmal
+        self.assertEqual(calls, [(1, 2, 0), (1, 2, 2)])  # one after the other, each exactly once
         levels = {c["slot"]: (c["battery_level"], c["state_source"]) for c in status["receivers"][0]["controllers"]}
-        self.assertEqual(levels, {0: (1, "query"), 2: (2, "query")})  # auch ohne Monitor sichtbar
+        self.assertEqual(levels, {0: (1, "query"), 2: (2, "query")})  # visible without the monitor too
 
     def test_no_controller_no_query(self):
         calls, status = self._run(set(), lambda n: {"ok": True, "state": self.STATE})
@@ -302,16 +339,16 @@ class StartupBatteryTests(unittest.TestCase):
         self.assertEqual(levels, {0: None, 1: 2})
 
     def test_error_in_one_query_does_not_stop_the_others(self):
-        calls, status = self._run({0, 1}, lambda n: {"ok": False, "error": "libusb nicht ladbar"} if n == 1 else {"ok": True, "state": self.STATE})
+        calls, status = self._run({0, 1}, lambda n: {"ok": False, "error": "libusb could not be loaded"} if n == 1 else {"ok": True, "state": self.STATE})
         self.assertEqual(len(calls), 2)
 
     def test_exception_does_not_break_plugin(self):
         def boom(n):
-            raise RuntimeError("kaputt")
+            raise RuntimeError("broken")
 
         calls, status = self._run({0}, boom)
         self.assertEqual(calls, [(1, 2, 0)])
-        self.assertIn("receivers", status)  # Plugin läuft weiter
+        self.assertIn("receivers", status)  # plugin keeps running
 
     def test_busy_receiver_is_retried(self):
         from x360w import actions
@@ -322,8 +359,8 @@ class StartupBatteryTests(unittest.TestCase):
 
     def test_unload_cancels_pending_startup_query(self):
         async def cancel_before_it_runs(plugin):
-            self.assertFalse(plugin.startup_task.done())  # wartet noch in der Pause nach dem Start
-            await plugin._unload()  # Entladen, bevor die Pause vorbei ist
+            self.assertFalse(plugin.startup_task.done())  # still waiting in the pause after the start
+            await plugin._unload()  # unload before the pause is over
             await asyncio.sleep(0)
             self.assertTrue(plugin.startup_task.cancelled())
 
@@ -355,7 +392,7 @@ class StartupBatteryTests(unittest.TestCase):
 
 
 class PoweroffServiceTests(unittest.TestCase):
-    """„Beim Herunterfahren ausschalten“ richtet den systemd-Dienst ein und entfernt ihn wieder."""
+    """“Turn off on shutdown” sets up the systemd service and removes it again."""
 
     def _run(self, scenario, settings=None, prepare=None):
         async def wrapper(tmp):
@@ -377,7 +414,7 @@ class PoweroffServiceTests(unittest.TestCase):
     def test_enabling_installs_the_service_from_the_plugin_package(self):
         async def scenario(main, plugin, tmp):
             self.assertEqual((await plugin.set_poweroff_on_shutdown(True)), {"ok": True})
-            self.assertEqual(main.fake_unit.calls, [("install", "x360w")])  # Quelle: py_modules/x360w
+            self.assertEqual(main.fake_unit.calls, [("install", "x360w")])  # source: py_modules/x360w
             self.assertTrue((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
             return json.loads((Path(tmp) / "x360w.json").read_text())["poweroff_on_shutdown"]
 
@@ -385,10 +422,12 @@ class PoweroffServiceTests(unittest.TestCase):
 
     def test_failed_install_keeps_the_option_off_and_reports_the_error(self):
         async def scenario(main, plugin, tmp):
-            main.fake_unit.install_result = {"ok": False, "error": "systemctl kaputt"}
+            main.fake_unit.install_result = {"ok": False, "error": "systemctl broken"}
             result = await plugin.set_poweroff_on_shutdown(True)
             self.assertFalse(result["ok"])
-            self.assertIn("systemctl kaputt", result["error"])
+            self.assertIn("systemctl broken", result["error"])
+            # a translatable code, with the technical reason as detail
+            self.assertEqual((result["code"], result["detail"]), ("unit_setup_failed", "systemctl broken"))
             self.assertFalse((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
             self.assertFalse((Path(tmp) / "x360w.json").exists() and
                              json.loads((Path(tmp) / "x360w.json").read_text()).get("poweroff_on_shutdown"))
@@ -409,17 +448,18 @@ class PoweroffServiceTests(unittest.TestCase):
     def test_incomplete_removal_is_reported_but_option_is_off(self):
         async def scenario(main, plugin, tmp):
             await plugin.set_poweroff_on_shutdown(True)
-            main.fake_unit.uninstall_result = {"ok": False, "errors": ["systemctl disable kaputt"]}
+            main.fake_unit.uninstall_result = {"ok": False, "errors": ["systemctl disable broken"]}
             result = await plugin.set_poweroff_on_shutdown(False)
             self.assertFalse(result["ok"])
-            self.assertIn("systemctl disable kaputt", result["error"])
+            self.assertIn("systemctl disable broken", result["error"])
+            self.assertEqual((result["code"], result["detail"]), ("unit_removal_failed", "systemctl disable broken"))
             self.assertFalse((await plugin.get_status())["settings"]["poweroff_on_shutdown"])
 
         self._run(scenario)
 
     def test_invalid_values_touch_nothing(self):
         async def scenario(main, plugin, tmp):
-            for bad in ("ja", 1, None):
+            for bad in ("yes", 1, None):
                 self.assertFalse((await plugin.set_poweroff_on_shutdown(bad))["ok"])
             self.assertEqual(main.fake_unit.calls, [])
 
@@ -439,7 +479,7 @@ class PoweroffServiceTests(unittest.TestCase):
 
         self.assertEqual(self._run(scenario, {"poweroff_on_shutdown": False}, lambda u: setattr(u, "installed", True)),
                          [("uninstall",)])
-        self.assertEqual(self._run(scenario, {}, lambda u: setattr(u, "installed", True)), [("uninstall",)])  # Standard: aus
+        self.assertEqual(self._run(scenario, {}, lambda u: setattr(u, "installed", True)), [("uninstall",)])  # default: off
 
     def test_start_with_option_off_and_no_service_does_nothing(self):
         async def scenario(main, plugin, tmp):
@@ -454,13 +494,12 @@ class PoweroffServiceTests(unittest.TestCase):
             return (await plugin.get_status())["diagnostics"]
 
         diagnostics = self._run(scenario, {"poweroff_on_shutdown": True},
-                                lambda u: setattr(u, "install_result", {"ok": False, "error": "kein systemd"}))
-        self.assertIn("nicht eingerichtet", diagnostics["verdict"])
-        self.assertIn("kein systemd", diagnostics["verdict"])
+                                lambda u: setattr(u, "install_result", {"ok": False, "error": "no systemd"}))
+        self.assertEqual(diagnostics["verdict"], {"code": "install_failed", "error": "no systemd"})
 
     def test_toggle_right_after_start_is_not_undone_by_the_start_sync(self):
         async def scenario(main, plugin, tmp):
-            await plugin.set_poweroff_on_shutdown(True)  # bevor der Abgleich beim Start gelaufen ist
+            await plugin.set_poweroff_on_shutdown(True)  # before the reconciliation at start has run
             await plugin.unit_task
             self.assertTrue(main.fake_unit.installed)
             self.assertNotIn(("uninstall",), main.fake_unit.calls)
@@ -474,7 +513,7 @@ class PoweroffServiceTests(unittest.TestCase):
 
         def boom(unit):
             def install(package_dir):
-                raise RuntimeError("kaputt")
+                raise RuntimeError("broken")
             unit.install = install
 
         self._run(scenario, {"poweroff_on_shutdown": True}, boom)
@@ -489,7 +528,7 @@ class PoweroffServiceTests(unittest.TestCase):
 
         diagnostics = self._run(scenario, {"poweroff_on_shutdown": True},
                                 lambda u: (setattr(u, "last_run", run), setattr(u, "installed", True)))
-        self.assertIn("2 von 2 Controllern", diagnostics["verdict"])
+        self.assertEqual(diagnostics["verdict"], {"code": "run_ok", "sent": 2, "total": 2})
 
     def test_no_diagnostics_when_off_and_never_run(self):
         async def scenario(main, plugin, tmp):
@@ -498,8 +537,8 @@ class PoweroffServiceTests(unittest.TestCase):
         self.assertIsNone(self._run(scenario))
 
     def test_unload_leaves_the_service_alone_and_never_powers_off(self):
-        # Das Plugin schaltet beim Entladen nichts aus: Das macht der Dienst, auch wenn Decky das Plugin beim
-        # Herunterfahren gar nicht ordentlich stoppt.
+        # The plugin turns nothing off when it is unloaded: the service does that, even if Decky does not
+        # stop the plugin properly on shutdown at all.
         sent = []
 
         async def scenario(main, plugin, tmp):
@@ -527,8 +566,8 @@ class UninstallTests(unittest.TestCase):
         dirs = {kind: home / kind / "X360 Receiver" for kind in ("settings", "data", "logs")}
         for d in dirs.values():
             d.mkdir(parents=True)
-            (d / "datei").write_text("x")
-        other = home / "settings" / "Anderes Plugin"
+            (d / "file").write_text("x")
+        other = home / "settings" / "Other Plugin"
         other.mkdir()
         param = Path(tmp) / "auto_poweroff"
         return home, dirs, other, param
@@ -555,14 +594,14 @@ class UninstallTests(unittest.TestCase):
             self.assertTrue((await plugin.set_auto_poweroff(False))["ok"])
             self.assertEqual(param.read_text().strip(), "N")
             saved = json.loads((dirs["settings"] / "x360w.json").read_text())
-            self.assertIs(saved["original_auto_poweroff"], True)  # Wert vor der ersten Änderung
+            self.assertIs(saved["original_auto_poweroff"], True)  # value before the first change
 
             await plugin._unload()
             await plugin._uninstall()
             self.assertEqual(param.read_text().strip(), "Y")
             for d in dirs.values():
                 self.assertFalse(d.exists(), d)
-            self.assertTrue(other.exists())  # fremdes Plugin unberührt
+            self.assertTrue(other.exists())  # foreign plugin untouched
             self.assertTrue(home.exists())
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -578,7 +617,7 @@ class UninstallTests(unittest.TestCase):
             await plugin._main()
             await plugin._unload()
             await plugin._uninstall()
-            self.assertEqual(param.read_text(), "N\n")  # nie geändert, also nicht angefasst
+            self.assertEqual(param.read_text(), "N\n")  # never changed, so not touched
             self.assertFalse(dirs["settings"].exists())
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -603,7 +642,7 @@ class UninstallTests(unittest.TestCase):
             main = self._load(home, dirs)
 
             def boom(*args):
-                raise RuntimeError("kaputt")
+                raise RuntimeError("broken")
 
             main.fake_unit.uninstall = boom
             plugin = main.Plugin()
@@ -618,11 +657,11 @@ class UninstallTests(unittest.TestCase):
 
     def test_uninstall_survives_missing_dirs_and_missing_decky_home(self):
         async def scenario(tmp):
-            main = load_main(tmp)  # Attrappe ohne DECKY_HOME und ohne Plugin-Verzeichnisse
+            main = load_main(tmp)  # stand-in without DECKY_HOME and without plugin directories
             plugin = main.Plugin()
             await plugin._main()
             await plugin._unload()
-            await plugin._uninstall()  # darf nicht werfen
+            await plugin._uninstall()  # must not raise
             self.assertTrue(Path(tmp).exists())
 
         with tempfile.TemporaryDirectory() as tmp:

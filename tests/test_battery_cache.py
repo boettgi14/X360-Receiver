@@ -1,4 +1,4 @@
-"""Tests für x360w.battery_cache: abgefragte Akkustände mit Alter und Verfallsfrist."""
+"""Tests for x360w.battery_cache: queried battery levels with age and expiry period."""
 
 import sys
 import unittest
@@ -40,7 +40,7 @@ class BatteryCacheTests(unittest.TestCase):
         self.assertAlmostEqual(entry["age_s"], 0.0)
 
     def test_short_absence_keeps_entry(self):
-        # Während der Anfrage verschwindet der Controller selbst kurz aus dem System.
+        # During the request the controller itself briefly disappears from the system.
         self.cache.store((1, 2, 0), STATE)
         self.cache.prune([])
         self.clock.now += 10
@@ -58,9 +58,9 @@ class BatteryCacheTests(unittest.TestCase):
         self.cache.store((1, 2, 0), STATE)
         self.cache.prune([])
         self.clock.now += 10
-        self.cache.prune([(1, 2, 0)])  # wieder da
+        self.cache.prune([(1, 2, 0)])  # back again
         self.clock.now += 10
-        self.cache.prune([])  # neue Abwesenheit beginnt erst jetzt
+        self.cache.prune([])  # a new absence only starts now
         self.clock.now += 10
         self.cache.prune([])
         self.assertIn((1, 2, 0), self.cache.snapshot())

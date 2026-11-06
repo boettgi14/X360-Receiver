@@ -1,8 +1,10 @@
-// Rendertest für das Frontend (dist/index.js) mit gestellten Decky-Bausteinen und jsdom.
-// Prüft Aufbau, Reihenfolge der Gruppen, Ausklappen, Schalter und Backend-Aufrufe. Es ist KEIN Test
-// gegen Steams echte Oberfläche: Aussehen und Fokus-Navigation bleiben ungeprüft.
-// Aufruf in einem Ordner mit installiertem react, react-dom und jsdom (z. B. leeres Verzeichnis,
-// `npm install react react-dom jsdom`):   node <Pfad>/tools/frontend_render_test.mjs <Pfad>/dist/index.js
+// Render test for the frontend (dist/index.js) with stand-in Decky components and jsdom.
+// Checks layout, order of the groups, expanding, switches, backend calls and the texts in BOTH
+// languages (English and German, chosen through `navigator.languages` like in the Steam UI).
+// It is NOT a test against Steam's real UI: looks and focus navigation stay unchecked, and so does
+// the real value of `navigator.language` inside Steam (see src/i18n.ts).
+// Run in a folder with react, react-dom and jsdom installed (e.g. an empty directory,
+// `npm install react react-dom jsdom`):   node <path>/tools/frontend_render_test.mjs <path>/dist/index.js
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,21 +27,20 @@ globalThis.window = dom.window; globalThis.document = dom.window.document;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const h = React.createElement;
 const realSetInterval = globalThis.setInterval;
-globalThis.setInterval = (fn, ms) => realSetInterval(fn, Math.min(ms, 15)); // Abfrage statt alle 2 s alle 15 ms
+globalThis.setInterval = (fn, ms) => realSetInterval(fn, Math.min(ms, 15)); // poll every 15 ms instead of every 2 s
 
-// Gestellte Decky-Bausteine: einfache HTML-Elemente, damit Text und Klicks prüfbar sind.
-const text = (n) => (typeof n === "string" ? n : null);
+// Stand-in Decky components: plain HTML elements, so text and clicks can be checked.
 globalThis.DFL = {
   PanelSection: ({ title, children }) => h("section", { "data-title": title }, title && h("h2", null, title), children),
   PanelSectionRow: ({ children }) => h("div", { className: "row" }, children),
-  Field: ({ label, description, children, onClick, onActivate, icon }) =>
+  Field: ({ label, description, children, onClick, icon }) =>
     h("div", { className: "field", onClick }, icon, h("b", null, label), description && h("i", null, description), children),
   ToggleField: ({ label, description, checked, onChange }) =>
     h("div", { className: "toggle", "data-checked": String(checked), onClick: () => onChange(!checked) }, h("b", null, label), h("i", null, description)),
   ButtonItem: ({ children, description, onClick, disabled }) =>
     h("button", { disabled, onClick }, children, description && h("i", null, description)),
   DropdownItem: ({ label, rgOptions, selectedOption }) =>
-    h("div", { className: "dropdown", "data-selected": String(selectedOption) }, label, rgOptions.length + " Optionen"),
+    h("div", { className: "dropdown", "data-selected": String(selectedOption), "data-labels": rgOptions.map((o) => o.label).join("|") }, label),
   ConfirmModal: ({ strTitle }) => h("div", null, strTitle),
   showModal: () => {},
   staticClasses: { Title: "t" },
@@ -47,122 +48,246 @@ globalThis.DFL = {
 globalThis.SP_REACT = React;
 globalThis.SP_JSX = jsxRuntime;
 
-const calls = [];
+let calls = [];
 let status;
+let answers = {}; // call name → result; default is { ok: true }
 globalThis.window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit = {
   connect: () => ({
-    callable: (name) => async (...args) => { calls.push([name, ...args]); return name === "get_status" ? status : { ok: true }; },
+    callable: (name) => async (...args) => { calls.push([name, ...args]); return name === "get_status" ? status : (answers[name] ?? { ok: true }); },
     definePlugin: (fn) => fn,
     addEventListener() {}, removeEventListener() {}, toaster: {},
   }),
 };
 globalThis.document = dom.window.document;
 
+/** Makes the page believe the Steam UI language is `languages` (what `navigator.languages` would hold). */
+const setNavigator = (languages) => Object.defineProperty(globalThis, "navigator", {
+  value: languages === undefined ? {} : { language: languages[0], languages },
+  configurable: true,
+});
+
 const slot = (n, over = {}) => ({
   slot: n, connected: true, detected_by: ["monitor"], led: null, headset: false, chatpad: false,
-  subtype_name: "Gamepad", battery_level: null, state_age_s: null, state_source: null, connected_age_s: 5, last_led_mode: null, ...over,
+  subtype: 1, subtype_name: "Gamepad", battery_level: null, state_age_s: null, state_source: null, connected_age_s: 5, last_led_mode: null, ...over,
 });
 const base = () => ({
   settings: { monitor_enabled: true, auto_poweroff: true, poweroff_on_shutdown: false },
   monitor: { enabled: true, setup_error: null, readers: {} },
-  led_modes: { 0: "aus", 6: "Position 1 an" },
-  diagnostics: { verdict: "Der Dienst lief beim letzten Herunterfahren: 1 von 1 Controllern ausgeschaltet.", lines: ["Zeit: 2026-11-05 12:00:00", "Dauer: 1.2 s, Receiver: 1"] },
+  led_modes: { 0: "off", 6: "position 1 on" },
+  diagnostics: {
+    verdict: { code: "run_ok", sent: 1, total: 1 },
+    lines: [{ key: "time", value: "2026-11-05 12:00:00" }, { key: "duration", value: "1.2 s" }, { key: "receivers", value: "1" }],
+  },
   receivers: [
-    { usb_path: "1-3", label: "Xbox 360 Wireless Receiver (0719)", bus: 1, devnum: 2, slot_count: 4, unlocated_count: 0, unassigned_leds: [],
+    { usb_path: "1-3", label: "Xbox 360 Wireless Receiver (0719)", unofficial: false, bus: 1, devnum: 2, slot_count: 4, unlocated_count: 0, unassigned_leds: [],
       controllers: [slot(0, { battery_level: 2, state_age_s: 120, led: null }), slot(2, { battery_level: null, headset: true, detected_by: ["sysfs"] })] },
-    { usb_path: "3-1", label: "Xbox 360 Wireless Receiver (0291)", bus: 3, devnum: 7, slot_count: 4, unlocated_count: 1, unassigned_leds: ["xpad4"], controllers: [] },
+    { usb_path: "3-1", label: "Xbox 360 Wireless Receiver (02A9)", unofficial: true, bus: 3, devnum: 7, slot_count: 4, unlocated_count: 1, unassigned_leds: ["xpad4"], controllers: [] },
   ],
 });
 
+// Every text the test looks for, per language.
+const TEXT = {
+  en: {
+    order: ["General", "Monitoring", "Power", "Turn off on standby", "Turn off on shutdown", "Receiver 1", "Controller 1", "Level 2/3", "Controller 3", "Receiver 2"],
+    query: "Query battery now", turnOffController: "Turn off controller", details: "Details", slotOnReceiver: "Slot on receiver",
+    lastReport: "Last report", twoMinutes: "2 min ago", twoHours: "2.0 h ago", level2of3: "Level 2 of 3", level2: "Level 2/3",
+    ariaLevel2: 'aria-label="Battery level 2 of 3"', ariaUnknown: "Battery level unknown",
+    moreControllers: "1 more controller connected", ledsOfReceiver: "LEDs of this receiver", slotsInUse: "2 of 4 slots in use",
+    unofficial: "(02A9) · unofficial", ledPattern: "LED pattern", mode6: "6: position 1 on",
+    diagnostics: "Diagnostics", service: "Shutdown service", runOk: "1 of 1 controllers turned off",
+    time: "Time: 2026-11-05 12:00:00", duration: "Duration: 1.2 s",
+    toggleShutdown: "Turn off on shutdown", toggleStandby: "Turn off on standby",
+    noReceiver: "No Xbox 360 receiver found", standbyUnavailable: "Turn-off on standby unavailable",
+    noController: "No controller connected", wheel: "Wheel", unknownType: "Unknown (0x1F)",
+    busy: "Another access to the receiver is already running.", libusb: "libusb could not be loaded: libusb-1.0.so.0 missing",
+    setupFailed: "The service could not be set up: boom", fallbackError: "something technical",
+    partial: "1 of 2 controllers turned off, error: slot 2 timed out", optionOff: "(The option is now off.)",
+    installFailed: "The service is not set up: no systemd", runFailed: "ran at the last shutdown but failed: OSError: x",
+  },
+  de: {
+    order: ["Allgemein", "Überwachung", "Energie", "Beim Standby ausschalten", "Beim Herunterfahren ausschalten", "Receiver 1", "Controller 1", "Stufe 2/3", "Controller 3", "Receiver 2"],
+    query: "Akku jetzt abfragen", turnOffController: "Controller ausschalten", details: "Details", slotOnReceiver: "Slot am Receiver",
+    lastReport: "Letzte Meldung", twoMinutes: "vor 2 min", twoHours: "vor 2,0 h", level2of3: "Stufe 2 von 3", level2: "Stufe 2/3",
+    ariaLevel2: 'aria-label="Akkustufe 2 von 3"', ariaUnknown: "Akkustand unbekannt",
+    moreControllers: "1 weiterer Controller verbunden", ledsOfReceiver: "LEDs dieses Receivers", slotsInUse: "2 von 4 Slots belegt",
+    unofficial: "(02A9) · inoffiziell", ledPattern: "LED-Muster", mode6: "6: Position 1 an",
+    diagnostics: "Diagnose", service: "Dienst beim Herunterfahren", runOk: "1 von 1 Controllern ausgeschaltet",
+    time: "Zeit: 2026-11-05 12:00:00", duration: "Dauer: 1.2 s",
+    toggleShutdown: "Beim Herunterfahren", toggleStandby: "Beim Standby",
+    noReceiver: "Kein Xbox-360-Receiver gefunden", standbyUnavailable: "Standby-Ausschalten nicht verfügbar",
+    noController: "Kein Controller verbunden", wheel: "Lenkrad", unknownType: "Unbekannt (0x1F)",
+    busy: "Es läuft bereits ein Zugriff auf den Receiver.", libusb: "libusb nicht ladbar: libusb-1.0.so.0 missing",
+    setupFailed: "Der Dienst konnte nicht eingerichtet werden: boom", fallbackError: "something technical",
+    partial: "1 von 2 Controllern ausgeschaltet, Fehler: slot 2 timed out", optionOff: "(Option ist jetzt aus.)",
+    installFailed: "Der Dienst ist nicht eingerichtet: no systemd", runFailed: "lief beim letzten Herunterfahren, scheiterte aber: OSError: x",
+  },
+};
+
 const bundle = (await import(pathToFileURL(tmpBundle).href)).default;
-const plugin = bundle();
-const root = createRoot(document.getElementById("root"));
 const html = () => document.getElementById("root").innerHTML;
 const plain = () => document.getElementById("root").textContent;
 const flush = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 60)); }); };
-
-status = base();
-await act(async () => { root.render(plugin.content); });
-await flush();
-
-// --- Aufbau und Reihenfolge
-const out = plain();
-const order = ["Allgemein", "Überwachung", "Energie", "Beim Standby ausschalten", "Beim Herunterfahren ausschalten", "Receiver 1", "Controller 1", "Stufe 2/3", "Controller 3", "Receiver 2"];
-let pos = -1;
-for (const needle of order) { const i = out.indexOf(needle, pos + 1); assert.ok(i > pos, `"${needle}" fehlt oder steht an falscher Stelle`); pos = i; }
-assert.ok(!out.includes("Akku jetzt abfragen"), "Karten müssen eingeklappt starten");
-assert.ok(out.includes("1 weiterer Controller verbunden"), "nicht zugeordneter Controller wird erwähnt");
-assert.ok(out.includes("LEDs dieses Receivers"));
-assert.ok(out.includes("2 von 4 Slots belegt"));
-assert.ok(html().includes("Akkustufe 2 von 3"), "Akkubalken mit Beschriftung");
-assert.ok(html().includes("Akkustand unbekannt"), "Balken ohne Wert");
-
-// --- Ausklappen
-const headers = [...document.querySelectorAll(".field")].filter((f) => f.textContent.includes("Controller 1"));
-await act(async () => { headers[0].dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-const open = plain();
-for (const needle of ["Akku jetzt abfragen", "Controller ausschalten", "Details", "Slot am Receiver", "Letzte Meldung", "vor 2 min"]) assert.ok(open.includes(needle), needle + " fehlt");
-// Der aufgeklappte Bereich zeigt weder Akkubalken noch Stufe; beides steht nur in der Kopfzeile.
-assert.ok(!open.includes("Stufe 2 von 3"), "keine Akkustufe im aufgeklappten Bereich");
-assert.equal(html().split('aria-label="Akkustufe 2 von 3"').length - 1, 1, "Akkubalken nur einmal (Kopfzeile)");
-assert.equal(open.split("Stufe 2/3").length - 1, 1, "Stufe nur einmal (Kopfzeile)");
-assert.ok(!open.slice(0, open.indexOf("Receiver 2")).includes("LED-Muster"), "ohne zugeordnete LED keine LED-Gruppe in der Karte");
-assert.ok(open.slice(open.indexOf("Receiver 2")).includes("LED-Muster (xpad4)"), "nicht zuordenbare LED beim Receiver");
-// Gruppenüberschriften stehen in der Reihenfolge Akku → Energie → Details innerhalb der Karte
-const card = open.slice(open.indexOf("Akku jetzt abfragen") - 40);
-assert.ok(card.indexOf("Energie") < card.indexOf("Details"));
-
-// --- Diagnose: Urteil sichtbar, Einzelschritte erst nach dem Ausklappen
-assert.ok(open.includes("Diagnose") && open.includes("Dienst beim Herunterfahren"));
-assert.ok(open.includes("1 von 1 Controllern ausgeschaltet"));
-assert.ok(!open.includes("Dauer: 1.2 s, Receiver: 1"), "Einzelschritte zunächst eingeklappt");
-const diag = [...document.querySelectorAll(".field")].find((f) => f.textContent.includes("Dienst beim Herunterfahren"));
-await act(async () => { diag.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-assert.ok(plain().includes("Dauer: 1.2 s, Receiver: 1") && plain().includes("Zeit: 2026-11-05 12:00:00"));
-await act(async () => { diag.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-assert.ok(!plain().includes("Dauer: 1.2 s, Receiver: 1"), "wieder eingeklappt");
-
-// --- Schalter rufen das Backend
+const click = async (el) => { await act(async () => { el.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); }); };
+const fields = (text) => [...document.querySelectorAll(".field")].filter((f) => f.textContent.includes(text));
 const toggle = (name) => [...document.querySelectorAll(".toggle")].find((t) => t.textContent.includes(name));
-await act(async () => { toggle("Beim Herunterfahren").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-await act(async () => { toggle("Beim Standby").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-assert.deepEqual(calls.filter((c) => c[0] === "set_poweroff_on_shutdown"), [["set_poweroff_on_shutdown", true]]);
-assert.deepEqual(calls.filter((c) => c[0] === "set_auto_poweroff"), [["set_auto_poweroff", false]]);
 
-// --- Akku abfragen mit den richtigen Argumenten
-const btn = [...document.querySelectorAll("button")].find((b) => b.textContent.includes("Akku jetzt abfragen"));
-await act(async () => { btn.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true })); });
-await flush();
-assert.deepEqual(calls.filter((c) => c[0] === "query_battery"), [["query_battery", 1, 2, 0]]);
+async function mount(languages) {
+  setNavigator(languages);
+  const root = createRoot(document.getElementById("root"));
+  await act(async () => { root.render(bundle().content); });
+  await flush();
+  return root;
+}
 
-// --- zugeordnete LED erscheint in der Karte
-status = base();
-status.receivers[0].controllers = [slot(0, { battery_level: 3, led: "xpad0", last_led_mode: 6 })];
-status.receivers[0].unassigned_leds = [];
-await flush();
-const again = [...document.querySelectorAll(".field")].find((f) => f.textContent.includes("Controller 1"));
-assert.ok(plain().includes("LED-Muster (xpad0)"), "LED-Gruppe in geöffneter Karte");
-assert.equal(document.querySelector(".dropdown").dataset.selected, "6");
+async function runSuite(lang, languages) {
+  const T = TEXT[lang];
+  const label = `[${lang}]`;
+  calls = []; answers = {}; status = base();
+  const root = await mount(languages);
 
-// --- ohne Diagnose keine Diagnose-Gruppe
-status = base(); status.diagnostics = null;
-await flush();
-assert.ok(!plain().includes("Dienst beim Herunterfahren"));
+  // --- layout and order
+  const out = plain();
+  let pos = -1;
+  for (const needle of T.order) { const i = out.indexOf(needle, pos + 1); assert.ok(i > pos, `${label} "${needle}" missing or in the wrong place`); pos = i; }
+  assert.ok(!out.includes(T.query), `${label} cards must start collapsed`);
+  assert.ok(out.includes(T.moreControllers), `${label} unassigned controller is mentioned`);
+  assert.ok(out.includes(T.ledsOfReceiver));
+  assert.ok(out.includes(T.slotsInUse));
+  assert.ok(out.includes(T.unofficial), `${label} unofficial receiver is marked`);
+  assert.ok(html().includes(T.ariaLevel2), `${label} battery bar with label`);
+  assert.ok(html().includes(T.ariaUnknown), `${label} bar without a value`);
 
-// --- keine Receiver / Überwachung aus / Standby-Parameter nicht lesbar
-status = base(); status.receivers = []; status.settings.auto_poweroff = null; status.settings.monitor_enabled = false;
-await flush();
-const empty = plain();
-assert.ok(empty.includes("Kein Xbox-360-Receiver gefunden"));
-assert.ok(empty.includes("Standby-Ausschalten nicht verfügbar"));
-assert.ok(!empty.includes("Beim Standby ausschalten"));
-assert.ok(empty.includes("Beim Herunterfahren ausschalten"));
+  // --- expand
+  await click(fields("Controller 1")[0] ?? fields("Controller")[0]);
+  const open = plain();
+  for (const needle of [T.query, T.turnOffController, T.details, T.slotOnReceiver, T.lastReport, T.twoMinutes]) assert.ok(open.includes(needle), `${label} ${needle} missing`);
+  // The expanded area shows neither battery bar nor level; both appear only in the header row.
+  assert.ok(!open.includes(T.level2of3), `${label} no battery level in the expanded area`);
+  assert.equal(html().split(T.ariaLevel2).length - 1, 1, `${label} battery bar only once (header row)`);
+  assert.equal(open.split(T.level2).length - 1, 1, `${label} level only once (header row)`);
+  assert.ok(!open.slice(0, open.indexOf("Receiver 2")).includes(T.ledPattern), `${label} no LED group in the card without an assigned LED`);
+  assert.ok(open.slice(open.indexOf("Receiver 2")).includes(`${T.ledPattern} (xpad4)`), `${label} unassignable LED sits at the receiver`);
+  const card = open.slice(open.indexOf(T.query) - 40);
+  assert.ok(card.indexOf(TEXT[lang].order[2]) < card.indexOf(T.details), `${label} group order Battery → Power → Details`);
 
-// --- Receiver ohne Controller
-status = base(); status.receivers[1].unlocated_count = 0; status.receivers[1].unassigned_leds = [];
-await flush();
-assert.ok(plain().includes("Kein Controller verbunden"));
+  // --- diagnostics: verdict visible, single steps only after expanding
+  assert.ok(open.includes(T.diagnostics) && open.includes(T.service));
+  assert.ok(open.includes(T.runOk), `${label} verdict text`);
+  assert.ok(!open.includes(T.duration), `${label} steps collapsed at first`);
+  const diag = fields(T.service)[0];
+  await click(diag);
+  assert.ok(plain().includes(T.duration) && plain().includes(T.time), `${label} diagnostic lines with translated labels`);
+  await click(diag);
+  assert.ok(!plain().includes(T.duration), `${label} collapsed again`);
 
-console.log("Rendertest OK,", calls.length, "Backend-Aufrufe");
-root.unmount();
+  // --- switches call the backend
+  await click(toggle(T.toggleShutdown));
+  await click(toggle(T.toggleStandby));
+  assert.deepEqual(calls.filter((c) => c[0] === "set_poweroff_on_shutdown"), [["set_poweroff_on_shutdown", true]]);
+  assert.deepEqual(calls.filter((c) => c[0] === "set_auto_poweroff"), [["set_auto_poweroff", false]]);
+
+  // --- query the battery with the right arguments
+  const queryButton = () => [...document.querySelectorAll("button")].find((b) => b.textContent.includes(T.query));
+  await click(queryButton());
+  await flush();
+  assert.deepEqual(calls.filter((c) => c[0] === "query_battery"), [["query_battery", 1, 2, 0]]);
+
+  // --- error codes from the backend are translated; details and unknown codes are handled
+  answers.query_battery = { ok: false, error: "Another access to the receiver is already running.", code: "busy" };
+  await click(queryButton()); await flush();
+  assert.ok(plain().includes(T.busy), `${label} busy code translated`);
+  answers.query_battery = { ok: false, error: "libusb could not be loaded: libusb-1.0.so.0 missing", code: "libusb_unavailable", detail: "libusb-1.0.so.0 missing" };
+  await click(queryButton()); await flush();
+  assert.ok(plain().includes(T.libusb), `${label} code with detail`);
+  answers.query_battery = { ok: false, error: "something technical", code: "no_such_code" };
+  await click(queryButton()); await flush();
+  assert.ok(plain().includes(T.fallbackError), `${label} unknown code falls back to the backend text`);
+  answers.query_battery = { ok: false, error: "something technical" };
+  await click(queryButton()); await flush();
+  assert.ok(plain().includes(T.fallbackError), `${label} no code falls back to the backend text`);
+  answers.set_poweroff_on_shutdown = { ok: false, error: "Service not set up: boom", code: "unit_setup_failed", detail: "boom" };
+  await click(toggle(T.toggleShutdown)); await flush();
+  assert.ok(plain().includes(T.setupFailed), `${label} service setup error translated`);
+  answers = {};
+
+  // --- assigned LED appears in the card; the mode names are translated
+  status = base();
+  status.receivers[0].controllers = [slot(0, { battery_level: 3, led: "xpad0", last_led_mode: 6 })];
+  status.receivers[0].unassigned_leds = [];
+  await flush();
+  assert.ok(plain().includes(`${T.ledPattern} (xpad0)`), `${label} LED group in the open card`);
+  const dropdown = document.querySelector(".dropdown");
+  assert.equal(dropdown.dataset.selected, "6");
+  assert.ok(dropdown.dataset.labels.split("|").includes(T.mode6), `${label} LED mode names are translated`);
+
+  // --- controller types: translated by subtype number, unknown types shown with their code
+  status = base();
+  status.receivers[0].controllers = [slot(0, { subtype: 2, subtype_name: "Wheel" }), slot(1, { subtype: 31, subtype_name: "Unknown (0x1F)" })];
+  await flush();
+  assert.ok(plain().includes(T.wheel), `${label} subtype name`);
+  assert.ok(plain().includes(T.unknownType), `${label} unknown subtype`);
+
+  // --- age of a report in hours uses the decimal separator of the language
+  status = base();
+  status.receivers[0].controllers = [slot(0, { battery_level: 1, state_age_s: 7200 })];
+  await flush();
+  assert.ok(plain().includes(T.twoHours), `${label} hours with decimal separator`);
+
+  // --- diagnostics verdicts
+  const verdicts = [
+    [{ code: "run_partial", sent: 1, total: 2, error: "slot 2 timed out" }, T.partial],
+    [{ code: "run_ok", sent: 2, total: 2, option_off: true }, T.optionOff],
+    [{ code: "install_failed", error: "no systemd" }, T.installFailed],
+    [{ code: "run_failed", error: "OSError: x" }, T.runFailed],
+  ];
+  for (const [verdict, needle] of verdicts) {
+    status = base(); status.diagnostics.verdict = verdict;
+    await flush();
+    assert.ok(plain().includes(needle), `${label} verdict ${verdict.code}`);
+  }
+
+  // --- without diagnostics there is no diagnostics group
+  status = base(); status.diagnostics = null;
+  await flush();
+  assert.ok(!plain().includes(T.service));
+
+  // --- no receivers / monitoring off / standby parameter unreadable
+  status = base(); status.receivers = []; status.settings.auto_poweroff = null; status.settings.monitor_enabled = false;
+  await flush();
+  const empty = plain();
+  assert.ok(empty.includes(T.noReceiver));
+  assert.ok(empty.includes(T.standbyUnavailable));
+  assert.ok(!empty.includes(T.toggleStandby));
+  assert.ok(empty.includes(T.toggleShutdown));
+
+  // --- receiver without controllers
+  status = base(); status.receivers[1].unlocated_count = 0; status.receivers[1].unassigned_leds = [];
+  await flush();
+  assert.ok(plain().includes(T.noController));
+
+  await act(async () => { root.unmount(); });
+  console.log(`${label} render test OK, ${calls.length} backend calls`);
+}
+
+// --- language detection: first supported entry of the language list wins, English is the fallback
+await runSuite("en", ["en-US", "en"]);
+await runSuite("de", ["de-DE", "de"]);
+
+async function languageOf(languages) {
+  status = base(); calls = []; answers = {};
+  const root = await mount(languages);
+  const text = plain();
+  await act(async () => { root.unmount(); });
+  return text.includes("Allgemein") ? "de" : text.includes("General") ? "en" : "?";
+}
+assert.equal(await languageOf(["de"]), "de");
+assert.equal(await languageOf(["de-AT"]), "de");
+assert.equal(await languageOf(["en-GB"]), "en");
+assert.equal(await languageOf(["fr-FR"]), "en", "unsupported language falls back to English");
+assert.equal(await languageOf(["fr-FR", "de-DE"]), "de", "first supported entry wins");
+assert.equal(await languageOf(["en-US", "de-DE"]), "en", "an earlier English entry beats a later German one");
+assert.equal(await languageOf([]), "en", "empty list falls back to English");
+assert.equal(await languageOf(undefined), "en", "no navigator falls back to English");
+console.log("language detection OK");
+
 process.exit(0);

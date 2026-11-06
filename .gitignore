@@ -1,4 +1,4 @@
-# Build-Ausgabe und Abhängigkeiten
+# Build output and dependencies
 node_modules/
 dist/
 *.zip
@@ -8,6 +8,6 @@ dist/
 __pycache__/
 *.pyc
 
-# Lokale Aufzeichnungen aus tools/ (können Geräte- und Busdaten enthalten)
+# Local recordings from tools/ (may contain device and bus data)
 discover.txt
 capture*.log

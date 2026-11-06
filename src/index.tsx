@@ -1,8 +1,9 @@
-// Decky-Frontend. Aufbau von oben nach unten:
-//   Allgemein (Gruppen: Überwachung, Energie) → je Receiver ein Abschnitt → darin die verbundenen
-//   Controller als ausklappbare Karten → darin Gruppen (Akku, Energie, LED, Details).
-// Jede Untergruppe hat eine Überschrift und eine Einrückung mit Linie links, damit klar ist, wozu eine
-// Einstellung gehört. Am Gerät nie gerendert; gebaut und typgeprüft wird nur in einer Testkopie.
+// Decky frontend. Layout from top to bottom:
+//   General (groups: Monitoring, Power) → one section per receiver → in it the connected
+//   controllers as expandable cards → in them groups (Battery, Power, LED, Details).
+// Every subgroup has a heading and an indented line on the left, so it is clear what a setting
+// belongs to. All texts come from `i18n.ts` (English and German, following the Steam UI language).
+// Never rendered on a device yet; it is only built and type-checked in a test copy.
 import {
   ButtonItem,
   ConfirmModal,
@@ -15,7 +16,7 @@ import {
   staticClasses,
 } from "@decky/ui";
 import { callable, definePlugin } from "@decky/api";
-import { ReactNode, useCallback, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   FaChevronDown,
   FaEye,
@@ -27,8 +28,20 @@ import {
   FaSyncAlt,
   FaUsb,
 } from "react-icons/fa";
+import {
+  FailureLike,
+  MESSAGES,
+  Messages,
+  Verdict,
+  detectLanguage,
+  errorText,
+  formatAge,
+  ledModeName,
+  subtypeName,
+  verdictText,
+} from "./i18n";
 
-// ---------------------------------------------------------------- Typen
+// ---------------------------------------------------------------- Types
 
 interface Controller {
   slot: number;
@@ -36,6 +49,7 @@ interface Controller {
   led: string | null;
   headset: boolean;
   chatpad: boolean;
+  subtype: number | null;
   subtype_name: string | null;
   battery_level: number | null;
   state_age_s: number | null;
@@ -47,6 +61,7 @@ interface Controller {
 interface Receiver {
   usb_path: string;
   label: string;
+  unofficial: boolean;
   bus: number | null;
   devnum: number | null;
   controllers: Controller[];
@@ -64,12 +79,11 @@ interface Status {
   monitor: { enabled: boolean; setup_error: string | null; readers: Record<string, { error: string | null }> };
   receivers: Receiver[];
   led_modes: Record<string, string>;
-  diagnostics: { verdict: string; lines: string[] } | null;
+  diagnostics: { verdict: Verdict; lines: { key: string; value: string }[] } | null;
 }
 
-interface Result {
+interface Result extends FailureLike {
   ok: boolean;
-  error?: string;
 }
 
 interface BatteryResult extends Result {
@@ -97,25 +111,18 @@ const resetLed = callable<[name: string], Result>("reset_led");
 const queryBattery = callable<[bus: number, devnum: number, slot: number], BatteryResult>("query_battery");
 const powerOff = callable<[bus: number, devnum: number, slot: number], PowerOffResult>("power_off");
 
-// ---------------------------------------------------------------- Hilfen
+// ---------------------------------------------------------------- Helpers
 
-const LEVEL_COLORS = ["#ff5d5d", "#ff5d5d", "#ffb020", "#4cc38a"]; // Stufe 0..3
+const LEVEL_COLORS = ["#ff5d5d", "#ff5d5d", "#ffb020", "#4cc38a"]; // level 0..3
 const MUTED = "rgba(255,255,255,0.35)";
 const LINE = "rgba(255,255,255,0.14)";
 
-function formatAge(seconds: number | null): string {
-  if (seconds === null) return "unbekannt";
-  if (seconds < 90) return `vor ${Math.round(seconds)} s`;
-  if (seconds < 5400) return `vor ${Math.round(seconds / 60)} min`;
-  return `vor ${(seconds / 3600).toFixed(1)} h`;
+function levelText(t: Messages, level: number | null): string {
+  return level === null ? "–" : t.level(level);
 }
 
-function levelText(level: number | null): string {
-  return level === null ? "–" : `Stufe ${level}/3`;
-}
-
-/** Typischer Akkubalken: Rahmen mit Pol, drei Segmente; die Farbe folgt der Stufe. */
-function BatteryBar({ level }: { level: number | null }) {
+/** Typical battery bar: frame with a terminal, three segments; the color follows the level. */
+function BatteryBar({ level, t }: { level: number | null; t: Messages }) {
   const color = level === null ? MUTED : (LEVEL_COLORS[level] ?? MUTED);
   const filled = level ?? 0;
   const width = 48;
@@ -123,7 +130,7 @@ function BatteryBar({ level }: { level: number | null }) {
   return (
     <div
       role="img"
-      aria-label={level === null ? "Akkustand unbekannt" : `Akkustufe ${level} von 3`}
+      aria-label={level === null ? t.batteryLevelUnknown : t.batteryLevelLabel(level)}
       style={{ display: "flex", alignItems: "center", flexShrink: 0 }}
     >
       <div
@@ -150,7 +157,7 @@ function BatteryBar({ level }: { level: number | null }) {
   );
 }
 
-/** Untergruppe mit Überschrift; die Linie links zeigt, was dazugehört. */
+/** Subgroup with a heading; the line on the left shows what belongs to it. */
 function Group({ title, icon, children }: { title: string; icon?: ReactNode; children: ReactNode }) {
   return (
     <div style={{ margin: "10px 0 6px 0" }}>
@@ -191,28 +198,30 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
-function describeController(c: Controller): string {
-  const parts = [c.subtype_name ?? "Controller"];
-  if (c.headset) parts.push("Headset");
-  if (c.chatpad) parts.push("Chatpad");
+function describeController(t: Messages, c: Controller): string {
+  const parts = [subtypeName(t, c.subtype, c.subtype_name) ?? t.controllerGeneric];
+  if (c.headset) parts.push(t.headset);
+  if (c.chatpad) parts.push(t.chatpad);
   return parts.join(" · ");
 }
 
-// ---------------------------------------------------------------- Oberfläche
+// ---------------------------------------------------------------- UI
 
 function Content() {
   const [status, setStatus] = useState<Status | null>(null);
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<boolean>(false);
+  const lang = useMemo(() => detectLanguage(), []);
+  const t = MESSAGES[lang];
 
   const refresh = useCallback(async () => {
     try {
       setStatus(await getStatus());
     } catch (e) {
-      setMessage({ text: `Backend nicht erreichbar: ${String(e)}`, error: true });
+      setMessage({ text: t.backendUnreachable(String(e)), error: true });
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     refresh();
@@ -221,8 +230,9 @@ function Content() {
   }, [refresh]);
 
   const say = (text: string, error = false) => setMessage({ text, error });
+  const sayFailure = (failure: FailureLike) => say(errorText(t, failure), true);
   const report = (result: Result) => {
-    if (!result.ok) say(result.error ?? "Fehler", true);
+    if (!result.ok) sayFailure(result);
   };
   const toggleOpen = (key: string) => setOpen((o) => ({ ...o, [key]: !o[key] }));
 
@@ -238,25 +248,25 @@ function Content() {
 
   const runBattery = (bus: number, devnum: number, slot: number) =>
     guarded(async () => {
-      say(`Controller ${slot + 1}: frage Akku ab …`);
+      say(t.queryingBattery(slot + 1));
       const result = await queryBattery(bus, devnum, slot);
-      if (!result.ok) say(result.error ?? "Fehler", true);
-      else if (!result.state) say(`Controller ${slot + 1}: keine Antwort (aus oder nicht verbunden?)`, true);
-      else say(`Controller ${slot + 1}: Akku ${levelText(result.state.battery_level)}, soeben abgefragt`);
+      if (!result.ok) sayFailure(result);
+      else if (!result.state) say(t.noResponse(slot + 1), true);
+      else say(t.batteryQueried(slot + 1, levelText(t, result.state.battery_level)));
     });
 
   const confirmPowerOff = (bus: number, devnum: number, slot: number) =>
     showModal(
       <ConfirmModal
-        strTitle={`Controller ${slot + 1} ausschalten?`}
-        strDescription="Der Controller geht aus und muss mit der Guide-Taste wieder eingeschaltet werden."
-        strOKButtonText="Ausschalten"
+        strTitle={t.turnOffTitle(slot + 1)}
+        strDescription={t.turnOffText}
+        strOKButtonText={t.turnOffButton}
         onOK={() =>
           guarded(async () => {
             const result = await powerOff(bus, devnum, slot);
-            if (!result.ok) say(result.error ?? "Fehler", true);
-            else if (result.confirmed) say(`Controller ${slot + 1}: ausgeschaltet`);
-            else say(`Controller ${slot + 1}: Befehl gesendet, keine Bestätigung (war evtl. schon aus)`, true);
+            if (!result.ok) sayFailure(result);
+            else if (result.confirmed) say(t.turnedOff(slot + 1));
+            else say(t.turnOffUnconfirmed(slot + 1), true);
           })
         }
       />,
@@ -265,28 +275,29 @@ function Content() {
   const confirmPowerOffAll = () =>
     showModal(
       <ConfirmModal
-        strTitle="Alle Controller ausschalten?"
-        strDescription="Alle verbundenen Controller an allen Receivern gehen aus. Derselbe Ablauf wie beim Herunterfahren."
-        strOKButtonText="Alle ausschalten"
+        strTitle={t.turnOffAllTitle}
+        strDescription={t.turnOffAllText}
+        strOKButtonText={t.turnOffAllButton}
         onOK={() =>
           guarded(async () => {
-            say("Schalte Controller aus …");
+            say(t.turningOffAll);
             const result = await powerOffAll();
-            if (result.errors.length > 0) say(result.errors.join(" | "), true);
-            else if (result.sent === 0) say("Kein verbundener Controller gefunden");
-            else say(`${result.sent} Controller ausgeschaltet (${result.confirmed} bestätigt)`);
+            // The error details come from the backend as English technical text.
+            if (result.errors.length > 0) say(t.turnOffAllProblem(result.errors.join(" | ")), true);
+            else if (result.sent === 0) say(t.noConnectedController);
+            else say(t.turnedOffAll(result.sent, result.confirmed));
           })
         }
       />,
     );
 
   if (status === null) {
-    return <PanelSection title="X360 Receiver">{message ? message.text : "Lade …"}</PanelSection>;
+    return <PanelSection title="X360 Receiver">{message ? message.text : t.loading}</PanelSection>;
   }
 
   const modeOptions = Object.entries(status.led_modes).map(([key, label]) => ({
     data: Number(key),
-    label: `${key}: ${label}`,
+    label: `${key}: ${ledModeName(t, Number(key), label)}`,
   }));
   const readerErrors = Object.entries(status.monitor.readers).filter(([, r]) => r.error);
   const monitorOn = status.settings.monitor_enabled;
@@ -295,7 +306,7 @@ function Content() {
     <>
       <PanelSectionRow>
         <DropdownItem
-          label={`LED-Muster (${name})`}
+          label={t.ledPattern(name)}
           rgOptions={modeOptions}
           selectedOption={current}
           onChange={async (option: { data: number }) => report(await setLed(name, option.data))}
@@ -303,7 +314,7 @@ function Content() {
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={async () => report(await resetLed(name))}>
-          Auf Standard zurücksetzen
+          {t.ledReset}
         </ButtonItem>
       </PanelSectionRow>
     </>
@@ -315,28 +326,28 @@ function Content() {
     const key = `${bus}-${devnum}-${c.slot}`;
     const isOpen = open[key] === true;
     const fresh =
-      c.state_age_s === null ? (monitorOn ? "noch nicht gemeldet" : "unbekannt") : formatAge(c.state_age_s);
+      c.state_age_s === null ? (monitorOn ? t.notReportedYet : t.unknown) : formatAge(t, lang, c.state_age_s);
     const freshNote =
       c.state_age_s === null && !monitorOn
-        ? "Die Überwachung ist aus. Der Akkustand wird beim Start des Plugins und mit „Akku jetzt abfragen“ ermittelt, nicht laufend."
+        ? t.freshnessMonitorOff(t.queryBattery)
         : c.state_source === "link"
-          ? "Aus der Verbindungsmeldung; wie frisch der Wert ist, ist unklar."
+          ? t.freshnessFromLink
           : undefined;
     return (
       <div key={key}>
         <PanelSectionRow>
           <Field
             icon={<FaGamepad />}
-            label={`Controller ${c.slot + 1}`}
-            description={describeController(c)}
+            label={t.controllerN(c.slot + 1)}
+            description={describeController(t, c)}
             focusable
             bottomSeparator="none"
             onActivate={() => toggleOpen(key)}
             onClick={() => toggleOpen(key)}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <BatteryBar level={c.battery_level} />
-              <span style={{ minWidth: 64, textAlign: "right", whiteSpace: "nowrap" }}>{levelText(c.battery_level)}</span>
+              <BatteryBar level={c.battery_level} t={t} />
+              <span style={{ minWidth: 64, textAlign: "right", whiteSpace: "nowrap" }}>{levelText(t, c.battery_level)}</span>
               <Chevron open={isOpen} />
             </div>
           </Field>
@@ -344,9 +355,9 @@ function Content() {
 
         {isOpen && (
           <div style={{ borderLeft: `3px solid ${LINE}`, margin: "0 0 10px 14px", paddingLeft: 6 }}>
-            <Group title="Akku" icon={<FaSyncAlt />}>
+            <Group title={t.groupBattery} icon={<FaSyncAlt />}>
               <PanelSectionRow>
-                <Field label="Letzte Meldung" description={freshNote} bottomSeparator="none" childrenLayout="inline">
+                <Field label={t.lastReport} description={freshNote} bottomSeparator="none" childrenLayout="inline">
                   <span style={{ opacity: 0.85, whiteSpace: "nowrap" }}>{fresh}</span>
                 </Field>
               </PanelSectionRow>
@@ -354,34 +365,37 @@ function Content() {
                 <ButtonItem
                   layout="below"
                   disabled={busy}
-                  description="Der Controller verschwindet dafür ca. 3 Sekunden. Nicht im Spiel benutzen."
+                  description={t.queryBatteryHint}
                   onClick={() => runBattery(bus, devnum, c.slot)}
                 >
-                  Akku jetzt abfragen
+                  {t.queryBattery}
                 </ButtonItem>
               </PanelSectionRow>
             </Group>
 
-            <Group title="Energie" icon={<FaPowerOff />}>
+            <Group title={t.groupPower} icon={<FaPowerOff />}>
               <PanelSectionRow>
                 <ButtonItem layout="below" disabled={busy} onClick={() => confirmPowerOff(bus, devnum, c.slot)}>
-                  Controller ausschalten
+                  {t.turnOffController}
                 </ButtonItem>
               </PanelSectionRow>
             </Group>
 
             {c.led !== null && (
-              <Group title="LED" icon={<FaLightbulb />}>
+              <Group title={t.groupLed} icon={<FaLightbulb />}>
                 {ledControls(c.led, c.last_led_mode)}
               </Group>
             )}
 
-            <Group title="Details">
-              <Detail label="Slot am Receiver" value={String(c.slot + 1)} />
-              <Detail label="Typ" value={c.subtype_name ?? "unbekannt"} />
-              <Detail label="Headset" value={c.headset ? "ja" : "nein"} />
-              <Detail label="Chatpad" value={c.chatpad ? "ja" : "nein"} />
-              <Detail label="Erkannt über" value={c.detected_by.map((s) => (s === "monitor" ? "Überwachung" : "System")).join(", ")} />
+            <Group title={t.groupDetails}>
+              <Detail label={t.detailSlot} value={String(c.slot + 1)} />
+              <Detail label={t.detailType} value={subtypeName(t, c.subtype, c.subtype_name) ?? t.unknown} />
+              <Detail label={t.detailHeadset} value={c.headset ? t.yes : t.no} />
+              <Detail label={t.detailChatpad} value={c.chatpad ? t.yes : t.no} />
+              <Detail
+                label={t.detailDetectedVia}
+                value={c.detected_by.map((s) => (s === "monitor" ? t.viaMonitor : t.viaSystem)).join(", ")}
+              />
             </Group>
           </div>
         )}
@@ -391,28 +405,29 @@ function Content() {
 
   const receiverSection = (r: Receiver, index: number) => {
     const known = r.bus !== null && r.devnum !== null;
+    const where = known ? ` · ${t.busDevice(r.bus as number, r.devnum as number)}` : "";
     return (
-      <PanelSection key={r.usb_path} title={`Receiver ${index + 1}`}>
+      <PanelSection key={r.usb_path} title={t.receiverN(index + 1)}>
         <PanelSectionRow>
           <Field
             icon={<FaUsb />}
-            label={r.label}
-            description={`USB ${r.usb_path}${known ? ` · Bus ${r.bus}, Gerät ${r.devnum}` : ""} · ${r.controllers.length} von ${r.slot_count} Slots belegt`}
+            label={r.unofficial ? `${r.label} · ${t.unofficial}` : r.label}
+            description={`USB ${r.usb_path}${where} · ${t.slotsInUse(r.controllers.length, r.slot_count)}`}
             bottomSeparator="none"
           />
         </PanelSectionRow>
 
-        <Group title="Controller" icon={<FaGamepad />}>
+        <Group title={t.groupControllers} icon={<FaGamepad />}>
           {r.controllers.length === 0 && r.unlocated_count === 0 && (
             <PanelSectionRow>
-              <Field label="Kein Controller verbunden" bottomSeparator="none" />
+              <Field label={t.noControllerConnected} bottomSeparator="none" />
             </PanelSectionRow>
           )}
           {r.unlocated_count > 0 && (
             <PanelSectionRow>
               <Field
-                label={`${r.unlocated_count} weiterer Controller verbunden`}
-                description="Der Slot wurde nicht erkannt. Mit „Akku-Status mitlesen“ (oben) erscheint er hier."
+                label={t.moreControllers(r.unlocated_count)}
+                description={t.moreControllersHint(t.monitorToggle)}
                 bottomSeparator="none"
               />
             </PanelSectionRow>
@@ -421,13 +436,9 @@ function Content() {
         </Group>
 
         {r.unassigned_leds.length > 0 && (
-          <Group title="LEDs dieses Receivers" icon={<FaLightbulb />}>
+          <Group title={t.groupReceiverLeds} icon={<FaLightbulb />}>
             <PanelSectionRow>
-              <Field
-                label="Zuordnung nicht möglich"
-                description="Die Zahl der LEDs passt nicht zur Zahl der erkannten Controller (xpad0 ist Controller 1, xpad1 Controller 2 usw.)."
-                bottomSeparator="none"
-              />
+              <Field label={t.ledUnassigned} description={t.ledUnassignedHint} bottomSeparator="none" />
             </PanelSectionRow>
             {r.unassigned_leds.map((name) => (
               <div key={name}>{ledControls(name, null)}</div>
@@ -449,18 +460,18 @@ function Content() {
               focusable
               onActivate={() => setMessage(null)}
               onClick={() => setMessage(null)}
-              description="Zum Ausblenden auswählen"
+              description={t.dismissHint}
             />
           </PanelSectionRow>
         </PanelSection>
       )}
 
-      <PanelSection title="Allgemein">
-        <Group title="Überwachung" icon={<FaEye />}>
+      <PanelSection title={t.general}>
+        <Group title={t.groupMonitoring} icon={<FaEye />}>
           <PanelSectionRow>
             <ToggleField
-              label="Akku-Status mitlesen"
-              description="Liest den USB-Verkehr der Receiver mit (usbmon), um Akkustand und Verbindungen zu zeigen. Gespeichert werden nur Status und Zähler, nie Tastendrücke."
+              label={t.monitorToggle}
+              description={t.monitorToggleHint}
               checked={monitorOn}
               onChange={async (value: boolean) => {
                 report(await setMonitorEnabled(value));
@@ -470,30 +481,26 @@ function Content() {
           </PanelSectionRow>
           {status.monitor.setup_error && (
             <PanelSectionRow>
-              <Field label="Monitor nicht startbar" description={status.monitor.setup_error} bottomSeparator="none" />
+              <Field label={t.monitorCannotStart} description={status.monitor.setup_error} bottomSeparator="none" />
             </PanelSectionRow>
           )}
           {readerErrors.map(([bus, reader]) => (
             <PanelSectionRow key={bus}>
-              <Field label={`Bus ${bus}`} description={reader.error ?? ""} bottomSeparator="none" />
+              <Field label={t.busN(bus)} description={reader.error ?? ""} bottomSeparator="none" />
             </PanelSectionRow>
           ))}
         </Group>
 
-        <Group title="Energie" icon={<FaMoon />}>
+        <Group title={t.groupPower} icon={<FaMoon />}>
           {status.settings.auto_poweroff === null ? (
             <PanelSectionRow>
-              <Field
-                label="Standby-Ausschalten nicht verfügbar"
-                description="Der Kernelparameter xpad.auto_poweroff ist nicht lesbar (Treiber xpad geladen?)."
-                bottomSeparator="none"
-              />
+              <Field label={t.standbyUnavailable} description={t.standbyUnavailableHint} bottomSeparator="none" />
             </PanelSectionRow>
           ) : (
             <PanelSectionRow>
               <ToggleField
-                label="Beim Standby ausschalten"
-                description="Alle Controller gehen aus, wenn das Gerät in den Standby geht. Gilt für alle Receiver."
+                label={t.standbyToggle}
+                description={t.standbyHint}
                 checked={status.settings.auto_poweroff}
                 onChange={async (value: boolean) => {
                   report(await setAutoPoweroff(value));
@@ -504,8 +511,8 @@ function Content() {
           )}
           <PanelSectionRow>
             <ToggleField
-              label="Beim Herunterfahren ausschalten"
-              description="Alle Controller gehen aus, wenn das Gerät herunterfährt oder neu startet. Gilt für alle Receiver. Richtet dafür einen kleinen Systemdienst ein, der beim Ausschalten der Option und beim Entfernen des Plugins wieder gelöscht wird."
+              label={t.shutdownToggle}
+              description={t.shutdownHint}
               checked={status.settings.poweroff_on_shutdown}
               onChange={async (value: boolean) => {
                 report(await setPoweroffOnShutdown(value));
@@ -514,23 +521,18 @@ function Content() {
             />
           </PanelSectionRow>
           <PanelSectionRow>
-            <ButtonItem
-              layout="below"
-              disabled={busy}
-              description="Gleicher Ablauf wie beim Herunterfahren, zum Ausprobieren."
-              onClick={confirmPowerOffAll}
-            >
-              Alle Controller jetzt ausschalten
+            <ButtonItem layout="below" disabled={busy} description={t.turnOffAllNowHint} onClick={confirmPowerOffAll}>
+              {t.turnOffAllNow}
             </ButtonItem>
           </PanelSectionRow>
         </Group>
 
         {status.diagnostics !== null && (
-          <Group title="Diagnose" icon={<FaStethoscope />}>
+          <Group title={t.groupDiagnostics} icon={<FaStethoscope />}>
             <PanelSectionRow>
               <Field
-                label="Dienst beim Herunterfahren"
-                description={status.diagnostics.verdict}
+                label={t.shutdownService}
+                description={verdictText(t, status.diagnostics.verdict)}
                 focusable
                 bottomSeparator="none"
                 onActivate={() => toggleOpen("diagnostics")}
@@ -543,7 +545,7 @@ function Content() {
               status.diagnostics.lines.map((line, i) => (
                 <PanelSectionRow key={i}>
                   <div style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                    {line}
+                    {`${(t.diagnosticLines as Record<string, string | undefined>)[line.key] ?? line.key}: ${line.value}`}
                   </div>
                 </PanelSectionRow>
               ))}
@@ -552,9 +554,9 @@ function Content() {
       </PanelSection>
 
       {status.receivers.length === 0 ? (
-        <PanelSection title="Receiver">
+        <PanelSection title={t.receiverTitle}>
           <PanelSectionRow>
-            <Field label="Kein Xbox-360-Receiver gefunden" description="USB-Dongle einstecken." bottomSeparator="none" />
+            <Field label={t.noReceiver} description={t.noReceiverHint} bottomSeparator="none" />
           </PanelSectionRow>
         </PanelSection>
       ) : (

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Packt das Plugin als Zip für Decky (Entwickler → "Plugin aus ZIP-Datei installieren").
+"""Packs the plugin as a zip for Decky (Developer → "Install Plugin from ZIP File").
 
-Enthalten: plugin.json, package.json, main.py, dist/index.js, py_modules/. Nicht enthalten:
-Quelltext des Frontends, Tests, Mitschnitte, Quellkarten.
-Aufruf: python3 -I tools/make_zip.py [Ausgabedatei]
+Included: plugin.json, package.json, main.py, dist/index.js, py_modules/. Not included:
+the frontend's source code, tests, captures, source maps.
+Usage: python3 -I tools/make_zip.py [output file]
 """
 
 import json
@@ -20,7 +20,7 @@ def collect() -> list:
     paths += sorted(p for p in (ROOT / "py_modules").rglob("*.py"))
     missing = [str(p.relative_to(ROOT)) for p in paths if not p.is_file()]
     if missing:
-        raise SystemExit("Fehlt: " + ", ".join(missing) + " (Frontend gebaut? npm run build)")
+        raise SystemExit("Missing: " + ", ".join(missing) + " (frontend built? npm run build)")
     return paths
 
 

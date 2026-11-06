@@ -11,7 +11,7 @@
       "battery",
       "xbox"
     ],
-    "description": "Akkustand, LEDs und Ausschalten für den Xbox 360 Wireless Gaming Receiver.",
+    "description": "Battery level, LEDs and turning off for the Xbox 360 Wireless Gaming Receiver.",
     "image": ""
   }
 }

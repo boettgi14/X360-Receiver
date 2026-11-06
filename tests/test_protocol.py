@@ -1,4 +1,4 @@
-"""Tests gegen reale Beispielpakete aus der xboxdrv-PROTOCOL-Datei."""
+"""Tests against real sample packets from the xboxdrv PROTOCOL file."""
 
 import sys
 import unittest
@@ -45,7 +45,7 @@ class DecodeTests(unittest.TestCase):
         )
 
     def test_state_a2(self):
-        # xboxdrv-Beispiel "Battery Message?": 00 00 00 13 a2
+        # xboxdrv example "Battery Message?": 00 00 00 13 a2
         state = decode_in_packet(pkt(0x00, 0x00, 0x00, 0x13, 0xA2))
         self.assertIsInstance(state, StateReport)
         self.assertEqual(state.vibration_level, 3)
@@ -67,7 +67,7 @@ class DecodeTests(unittest.TestCase):
         self.assertFalse(state.chatpad)
 
     def test_non_state_type0_is_unknown(self):
-        # Marker-Nibble != 0x1 muss ignoriert werden (laut argon.md)
+        # A marker nibble != 0x1 must be ignored (according to argon.md)
         for head in ((0x00, 0x00, 0x00, 0xF0, 0x00), (0x00, 0x00, 0x00, 0x20, 0x1D)):
             self.assertIsInstance(decode_in_packet(pkt(*head)), UnknownReport)
 
@@ -94,6 +94,12 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual(report.device_id, 0xB06300C9)
         self.assertEqual(report.state.battery_level, BatteryLevel.MEDIUM)
         self.assertEqual(report.vendor_id_data, bytes([0x40, 0x01, 0x50]))
+
+    def test_unknown_subtype_name_is_english(self):
+        # The frontend translates known subtypes by number; the backend name is the language-neutral fallback.
+        raw = bytes.fromhex("000f00f0f0cc" "fd1f9f70" "c90063b0" "00" "05" "13a7" "201d" "3003" "400150" "1f" "ffffff")
+        report = decode_in_packet(raw)
+        self.assertEqual(report.subtype_name, "Unknown (0x1F)")
 
     def test_too_short(self):
         self.assertIsNone(decode_in_packet(b"\x00"))

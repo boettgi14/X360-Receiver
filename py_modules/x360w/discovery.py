@@ -1,4 +1,4 @@
-"""Findet Xbox-360-Wireless-Receiver über sysfs. Nur lesend, keine Abhängigkeiten."""
+"""Finds Xbox 360 Wireless receivers through sysfs. Read-only, no dependencies."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set
 
-# 0x0291/0x0719 laut argon.md, 0x02a9 laut xpad.c ("Unofficial")
+# 0x0291/0x0719 according to argon.md, 0x02a9 according to xpad.c ("Unofficial").
+# The labels are language-neutral on purpose; the frontend adds a translated "unofficial" note.
 RECEIVER_IDS = {
     (0x045E, 0x0291): "Xbox 360 Wireless Receiver (0291)",
     (0x045E, 0x0719): "Xbox 360 Wireless Receiver (0719)",
-    (0x045E, 0x02A9): "Xbox 360 Wireless Receiver (inoffiziell, 02A9)",
+    (0x045E, 0x02A9): "Xbox 360 Wireless Receiver (02A9)",
 }
+UNOFFICIAL_IDS = {(0x045E, 0x02A9)}
 
 DEFAULT_SYSFS_USB = Path("/sys/bus/usb/devices")
 
@@ -20,8 +22,8 @@ DEFAULT_SYSFS_USB = Path("/sys/bus/usb/devices")
 class InterfaceInfo:
     name: str
     number: int
-    slot: Optional[int]  # 0..3 für Controller-Schnittstellen, None für Audio
-    role: str  # "controller" oder "audio" oder "other"
+    slot: Optional[int]  # 0..3 for controller interfaces, None for audio
+    role: str  # "controller", "audio" or "other"
     driver: Optional[str]
 
 
@@ -38,6 +40,7 @@ class ReceiverInfo:
     serial: Optional[str]
     firmware_bcd: Optional[str]
     interfaces: List[InterfaceInfo] = field(default_factory=list)
+    unofficial: bool = False  # xpad.c lists this ID as "Unofficial"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -90,11 +93,11 @@ def _describe_interface(path: Path) -> Optional[InterfaceInfo]:
 
 
 def connected_slots_sysfs(receiver: ReceiverInfo, sysfs_usb: Path = DEFAULT_SYSFS_USB) -> Set[int]:
-    """Slots, an denen xpad ein Eingabegerät angelegt hat (also ein Controller verbunden ist).
+    """Slots where xpad has created an input device (meaning a controller is connected).
 
-    xpad legt das Eingabegerät beim Verbinden an (`input_dev->dev.parent = &xpad->intf->dev`),
-    es erscheint als `<Schnittstelle>/input/inputN`. Aus dem Quelltext abgeleitet, am Gerät nicht
-    geprüft. Während eines kurzen Zugriffs (Treiber gelöst) fehlt es für einige Sekunden.
+    xpad creates the input device on connect (`input_dev->dev.parent = &xpad->intf->dev`);
+    it appears as `<interface>/input/inputN`. Derived from the source code, not checked on the
+    device. During a short takeover (driver unbound) it is missing for a few seconds.
     """
     slots: Set[int] = set()
     for interface in receiver.interfaces:
@@ -114,7 +117,7 @@ def find_receivers(sysfs_usb: Path = DEFAULT_SYSFS_USB) -> List[ReceiverInfo]:
         return receivers
 
     for dev in sorted(sysfs_usb.iterdir()):
-        # Schnittstellen heißen "1-2:1.0", Geräte "1-2" bzw. "usb1"
+        # Interfaces are named "1-2:1.0", devices "1-2" or "usb1"
         if ":" in dev.name:
             continue
         vid = _read_int(dev / "idVendor", 16)
@@ -133,6 +136,7 @@ def find_receivers(sysfs_usb: Path = DEFAULT_SYSFS_USB) -> List[ReceiverInfo]:
             product=_read(dev / "product"),
             serial=_read(dev / "serial"),
             firmware_bcd=_read(dev / "bcdDevice"),
+            unofficial=(vid, pid) in UNOFFICIAL_IDS,
         )
         for child in sorted(dev.glob(f"{dev.name}:*")):
             interface = _describe_interface(child)

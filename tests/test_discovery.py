@@ -1,4 +1,4 @@
-"""Tests für die Receiver-Erkennung gegen einen nachgebauten sysfs-Baum (ohne Hardware)."""
+"""Tests for receiver discovery against a reconstructed sysfs tree (no hardware)."""
 
 import sys
 import tempfile
@@ -36,7 +36,7 @@ class DiscoveryTests(unittest.TestCase):
             root = Path(tmp)
             make_receiver(root, "1-2", "0719", bus=1, devnum=4)
             make_receiver(root, "3-1", "0291", bus=3, devnum=7)
-            # Fremdes Gerät (Tastatur) darf nicht auftauchen
+            # A foreign device (keyboard) must not show up
             keyboard = root / "1-4"
             write(keyboard / "idVendor", "046d")
             write(keyboard / "idProduct", "c52b")
@@ -52,6 +52,22 @@ class DiscoveryTests(unittest.TestCase):
         audio = [i for i in first.interfaces if i.role == "audio"]
         self.assertEqual(len(audio), 4)
         self.assertTrue(all(i.slot is None for i in audio))
+
+    def test_labels_are_language_neutral_and_the_02a9_id_is_flagged_unofficial(self):
+        # The frontend adds a translated "unofficial" note; the backend label stays the same in every language.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_receiver(root, "1-2", "0719", bus=1, devnum=4)
+            make_receiver(root, "1-3", "0291", bus=1, devnum=5)
+            make_receiver(root, "1-5", "02a9", bus=1, devnum=6)
+            receivers = {r.usb_path: r for r in find_receivers(root)}
+        self.assertEqual(receivers["1-2"].label, "Xbox 360 Wireless Receiver (0719)")
+        self.assertEqual(receivers["1-3"].label, "Xbox 360 Wireless Receiver (0291)")
+        self.assertEqual(receivers["1-5"].label, "Xbox 360 Wireless Receiver (02A9)")
+        self.assertEqual({path: r.unofficial for path, r in receivers.items()},
+                         {"1-2": False, "1-3": False, "1-5": True})
+        self.assertIs(receivers["1-5"].to_dict()["unofficial"], True)
+        self.assertTrue(all(r.label.isascii() for r in receivers.values()))
 
     def test_missing_sysfs(self):
         self.assertEqual(find_receivers(Path("/nonexistent/sysfs")), [])

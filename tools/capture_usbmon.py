@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Phase 0: Liest usbmon-Text und zeigt nur Pakete des Receivers, dekodiert.
+"""Phase 0: Reads usbmon text and shows only the receiver's packets, decoded.
 
-Datenschutz: usbmon sieht den GESAMTEN Bus, also auch Tastaturen und Mäuse am selben
-Bus. Dieses Skript filtert strikt nach Bus und Geräteadresse und gibt nichts anderes
-aus. Zeilen anderer Geräte werden sofort verworfen und nie gespeichert.
+Privacy: usbmon sees the ENTIRE bus, including keyboards and mice on the same bus. This
+script filters strictly by bus and device address and outputs nothing else. Lines of other
+devices are discarded immediately and never stored.
 
-Beispiele (als root):
+Examples (as root):
   sudo modprobe usbmon
   sudo python3 -I tools/capture_usbmon.py --bus 1 --device 4 --seconds 60
-  python3 -I tools/capture_usbmon.py --file beispiel.txt --bus 1 --device 4   # Offline-Test
+  python3 -I tools/capture_usbmon.py --file example.txt --bus 1 --device 4   # offline test
 
-Bus und Gerät stehen in der Ausgabe von tools/discover.sh (busnum/devnum).
+Bus and device are in the output of tools/discover.sh (busnum/devnum).
 """
 
 from __future__ import annotations
@@ -33,22 +33,22 @@ from x360w.protocol import (  # noqa: E402
 
 def describe(report) -> str:
     if isinstance(report, ConnectionEvent):
-        return f"VERBINDUNG controller={report.controller} headset={report.headset}"
+        return f"CONNECTION controller={report.controller} headset={report.headset}"
     if isinstance(report, StateReport):
         return (
-            f"STATUS akku_stufe={int(report.battery_level)} ({report.battery_level.name}) "
-            f"akku_typ_roh={report.battery_type} power_roh={report.power_state} "
+            f"STATE battery_level={int(report.battery_level)} ({report.battery_level.name}) "
+            f"battery_type_raw={report.battery_type} power_state_raw={report.power_state} "
             f"headset={report.headset} chatpad={report.chatpad} "
             f"vibration={report.vibration_level}"
         )
     if isinstance(report, LinkReport):
         return (
             f"LINK subtype={report.subtype_name} device_id=0x{report.device_id:08X} "
-            f"protokoll=0x{report.protocol:04X} vendor_roh={report.vendor_id_data.hex()}"
+            f"protocol=0x{report.protocol:04X} vendor_raw={report.vendor_id_data.hex()}"
         )
     if isinstance(report, InputReport):
-        return "EINGABE (nicht ausgegeben)"
-    return f"SONST {type(report).__name__} {getattr(report, 'raw', b'').hex()}"
+        return "INPUT (not shown)"
+    return f"OTHER {type(report).__name__} {getattr(report, 'raw', b'').hex()}"
 
 
 def main() -> int:
@@ -56,8 +56,8 @@ def main() -> int:
     parser.add_argument("--bus", type=int, required=True)
     parser.add_argument("--device", type=int, required=True)
     parser.add_argument("--seconds", type=int, default=60)
-    parser.add_argument("--file", help="statt usbmon aus Datei lesen (Test)")
-    parser.add_argument("--show-input", action="store_true", help="Eingabepakete mit ausgeben")
+    parser.add_argument("--file", help="read from a file instead of usbmon (test)")
+    parser.add_argument("--show-input", action="store_true", help="also output input packets")
     args = parser.parse_args()
 
     source_path = args.file or f"/sys/kernel/debug/usb/usbmon/{args.bus}u"
@@ -67,32 +67,32 @@ def main() -> int:
     try:
         stream = open(source_path, "r", encoding="ascii", errors="replace")
     except OSError as exc:
-        print(f"Kann {source_path} nicht öffnen: {exc}", file=sys.stderr)
+        print(f"Cannot open {source_path}: {exc}", file=sys.stderr)
         return 1
 
     with stream:
         for line in stream:
             record = parse_usbmon_line(line)
             if record is None or record.bus != args.bus or record.device != args.device:
-                continue  # fremde Geräte: sofort verwerfen
+                continue  # foreign devices: discard immediately
 
             if record.xfer_type != "I" or not record.data:
                 continue
 
-            # Ungerade Endpunkte = Controller-Schnittstellen (1,3,5,7 = Slot 0..3),
-            # gerade = Audio/Headset (hier nicht ausgewertet).
+            # Odd endpoints = controller interfaces (1,3,5,7 = slot 0..3),
+            # even = audio/headset (not evaluated here).
             if record.endpoint % 2 == 0:
                 continue
             slot = (record.endpoint - 1) // 2
             arrow = "IN " if record.direction == "i" else "OUT"
             if record.direction == "i":
                 report = decode_in_packet(record.data)
-                text = describe(report) if report is not None else "zu kurz"
+                text = describe(report) if report is not None else "too short"
                 if isinstance(report, InputReport) and not args.show_input:
-                    counts["EINGABE"] = counts.get("EINGABE", 0) + 1
+                    counts["INPUT"] = counts.get("INPUT", 0) + 1
                     continue
             else:
-                text = "BEFEHL " + record.data.hex()
+                text = "COMMAND " + record.data.hex()
             key = text.split()[0]
             counts[key] = counts.get(key, 0) + 1
             print(f"{record.timestamp_us/1e6:12.3f} {arrow} ep=0x{record.endpoint:02X} slot={slot} {text}")
@@ -100,7 +100,7 @@ def main() -> int:
             if not args.file and time.monotonic() > deadline:
                 break
 
-    print("\nZusammenfassung:", counts)
+    print("\nSummary:", counts)
     return 0
 
 

@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Prüfwerkzeug (Phase 0d): sendet Befehle an EINEN Slot des Receivers und zeigt die Antworten.
+"""Test tool (phase 0d): sends commands to ONE slot of the receiver and shows the replies.
 
-Ablauf: xpad gibt die Schnittstelle des Slots frei, das Werkzeug sendet, liest und gibt frei,
-danach bindet xpad wieder. Der Slot liefert in dieser Zeit (wenige Sekunden) keine Eingaben an
-Steam. Nicht während eines Spiels ausführen. Braucht root und libusb.
+Procedure: xpad releases the slot's interface, the tool sends, reads and releases it,
+after which xpad binds again. During that time (a few seconds) the slot delivers no input to
+Steam. Do not run during a game. Needs root and libusb.
 
-Beispiele (Bus 1, Gerät 2, Slot 0 = erster Controller):
+Examples (bus 1, device 2, slot 0 = first controller):
   sudo python3 -I tools/probe_takeover.py --bus 1 --device 2 --slot 0 --battery-request
   sudo python3 -I tools/probe_takeover.py --bus 1 --device 2 --slot 0 --poweroff
 
-Gleichzeitig kann in einem zweiten Terminal ein usbmon-Mitschnitt laufen.
-Nicht an Hardware getestet. Es werden nur Status- und Verbindungspakete im Klartext angezeigt;
-Eingabepakete werden nur gezählt.
+A usbmon capture can run in a second terminal at the same time.
+Only state and connection packets are shown in plain text; input packets are only counted.
 """
 
 import argparse
@@ -33,13 +32,13 @@ from x360w.takeover import LibusbBackend, SlotSession, UsbError  # noqa: E402
 
 def describe(report) -> str:
     if isinstance(report, InputReport):
-        return "Eingabepaket" + (" mit Zustand im Header: " + str(report.state) if report.state else "")
+        return "input packet" + (" with state in the header: " + str(report.state) if report.state else "")
     return repr(report)
 
 
 def show(label: str, packets) -> None:
     inputs = sum(1 for _, _, rep in packets if isinstance(rep, InputReport) and rep.state is None)
-    print(f"  {label}: {len(packets)} Pakete, davon {inputs} reine Eingabepakete (nicht angezeigt)")
+    print(f"  {label}: {len(packets)} packets, of which {inputs} plain input packets (not shown)")
     for t, raw, rep in packets:
         if isinstance(rep, InputReport) and rep.state is None:
             continue
@@ -49,59 +48,59 @@ def show(label: str, packets) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bus", type=int, required=True)
-    parser.add_argument("--device", type=int, required=True, help="Geräteadresse (lsusb: Device)")
+    parser.add_argument("--device", type=int, required=True, help="device address (lsusb: Device)")
     parser.add_argument("--slot", type=int, required=True, choices=range(4))
-    parser.add_argument("--presence", action="store_true", help="Anwesenheitsabfrage (08 00 0F C0)")
-    parser.add_argument("--battery-request", action="store_true", help="Akkuanfrage (00 00 00 40), Wirkung unbekannt")
-    parser.add_argument("--capabilities", action="store_true", help="Fähigkeitenanfrage (00 00 02 80), Wirkung unbekannt")
-    parser.add_argument("--poweroff", action="store_true", help="Controller ausschalten (00 00 08 C0)")
-    parser.add_argument("--listen", type=float, default=2.0, help="Sekunden Lauschen nach jedem Befehl")
-    parser.add_argument("--yes", action="store_true", help="ohne Rückfrage")
+    parser.add_argument("--presence", action="store_true", help="presence request (08 00 0F C0)")
+    parser.add_argument("--battery-request", action="store_true", help="battery request (00 00 00 40)")
+    parser.add_argument("--capabilities", action="store_true", help="capabilities request (00 00 02 80), effect unknown")
+    parser.add_argument("--poweroff", action="store_true", help="turn the controller off (00 00 08 C0)")
+    parser.add_argument("--listen", type=float, default=2.0, help="seconds to listen after each command")
+    parser.add_argument("--yes", action="store_true", help="without confirmation")
     args = parser.parse_args()
 
     steps = []
     if args.presence:
-        steps.append(("Anwesenheitsabfrage", build_status_request()))
+        steps.append(("presence request", build_status_request()))
     if args.battery_request:
-        steps.append(("Akkuanfrage", build_battery_request()))
+        steps.append(("battery request", build_battery_request()))
     if args.capabilities:
-        steps.append(("Fähigkeitenanfrage", build_capabilities_request()))
+        steps.append(("capabilities request", build_capabilities_request()))
     if args.poweroff:
-        steps.append(("AUSSCHALTEN", build_poweroff()))
+        steps.append(("TURN OFF", build_poweroff()))
     if not steps:
-        steps.append(("nur Lauschen", None))
+        steps.append(("listen only", None))
 
     if os.geteuid() != 0:
-        print("Bitte als root ausführen (sudo).", file=sys.stderr)
+        print("Please run as root (sudo).", file=sys.stderr)
         return 2
 
-    print(f"Receiver Bus {args.bus}, Gerät {args.device}, Slot {args.slot} (Schnittstelle {2 * args.slot}).")
-    print("xpad gibt die Schnittstelle dieses Slots kurz frei. Schritte: " + ", ".join(n for n, _ in steps))
-    if not args.yes and input("Weiter mit Enter, Abbruch mit Strg+C: ") != "":
+    print(f"Receiver bus {args.bus}, device {args.device}, slot {args.slot} (interface {2 * args.slot}).")
+    print("xpad briefly releases this slot's interface. Steps: " + ", ".join(n for n, _ in steps))
+    if not args.yes and input("Press Enter to continue, Ctrl+C to abort: ") != "":
         return 1
 
     try:
         backend = LibusbBackend()
         with SlotSession(backend, args.bus, args.device, args.slot) as session:
-            show("vorher", session.listen(0.3))
+            show("before", session.listen(0.3))
             for name, packet in steps:
                 if packet is not None:
-                    print(f"* {name}: sende {packet.hex()}")
+                    print(f"* {name}: sending {packet.hex()}")
                     session.send(packet)
-                show("danach", session.listen(args.listen))
+                show("after", session.listen(args.listen))
     except UsbError as exc:
-        print(f"Fehler: {exc}", file=sys.stderr)
-        print("Falls der Controller danach nicht reagiert: Schnittstelle von Hand binden, z. B.\n"
-              "  echo <Name aus 'ls /sys/bus/usb/drivers/xpad/' bzw. dmesg> | sudo tee /sys/bus/usb/drivers/xpad/bind",
+        print(f"Error: {exc}", file=sys.stderr)
+        print("If the controller does not respond afterwards: bind the interface by hand, e.g.\n"
+              "  echo <name from 'ls /sys/bus/usb/drivers/xpad/' or dmesg> | sudo tee /sys/bus/usb/drivers/xpad/bind",
               file=sys.stderr)
         return 1
 
-    print("Fertig. xpad ist wieder gebunden.")
+    print("Done. xpad is bound again.")
     if args.poweroff:
-        print("Der Controller ist jetzt AUS und verbindet sich nicht von selbst. Zum Wiederverbinden "
-              "am Controller die Guide-Taste drücken.")
+        print("The controller is now OFF and does not reconnect by itself. To reconnect, "
+              "press the Guide button on the controller.")
     else:
-        print("Der Controller meldet sich in wenigen Sekunden neu.")
+        print("The controller reconnects in a few seconds.")
     return 0
 
 

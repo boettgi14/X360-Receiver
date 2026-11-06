@@ -1,11 +1,11 @@
-"""Liest usbmon-Text (/sys/kernel/debug/usb/usbmon/<bus>u) in einem Thread.
+"""Reads usbmon text (/sys/kernel/debug/usb/usbmon/<bus>u) in a thread.
 
-Datenschutz: usbmon liefert den gesamten Bus. Jede Zeile wird zuerst nur als Bytefolge auf die
-Adressmarke ":<bus>:<gerät>:" der beobachteten Receiver geprüft. Zeilen anderer Geräte werden
-verworfen, bevor sie decodiert werden, und nirgends gespeichert oder protokolliert.
+Privacy: usbmon delivers the entire bus. Each line is first checked, as plain bytes only, for the
+address marker ":<bus>:<device>:" of the watched receivers. Lines of other devices are discarded
+before they are decoded and are never stored or logged.
 
-Nicht an echter Hardware getestet: das nicht blockierende Lesen mit select() auf der usbmon-Datei.
-Rückfall, falls das nicht klappt: blockierendes read() in diesem Thread.
+Not tested on real hardware: non-blocking reading with select() on the usbmon file.
+Fallback if that does not work: a blocking read() in this thread.
 """
 
 from __future__ import annotations
@@ -22,27 +22,28 @@ from .safe_exec import run_fixed
 from .usbmon import parse_usbmon_line
 
 DEFAULT_TEMPLATE = "/sys/kernel/debug/usb/usbmon/{bus}u"
-MAX_PARTIAL_LINE = 1 << 20  # 1 MiB: Schutz vor Zeilen ohne Ende
+MAX_PARTIAL_LINE = 1 << 20  # 1 MiB: protection against lines without an end
 
 
 def ensure_usbmon(
     template: str = DEFAULT_TEMPLATE,
     runner=subprocess.run,
 ) -> Optional[str]:
-    """Lädt das Kernelmodul usbmon, falls die Schnittstelle fehlt. Gibt eine Fehlermeldung oder None zurück.
+    """Loads the usbmon kernel module if the interface is missing. Returns an error message or None.
 
-    Fester Aufruf ohne Nutzereingabe: `modprobe usbmon`. Nicht dauerhaft; nach einem Neustart
-    lädt das Plugin das Modul beim Einschalten des Monitors erneut. Am Gerät von Hand bestätigt
-    (`sudo modprobe usbmon` funktioniert); der Aufruf aus dem Plugin ist ungetestet.
+    Fixed call without user input: `modprobe usbmon`. Not persistent; after a reboot the plugin
+    loads the module again when the monitor is switched on. Confirmed by hand on the device
+    (`sudo modprobe usbmon` works); the call from inside the plugin is untested.
+    The messages are English and language-neutral; the frontend shows them as technical details.
     """
     if os.path.exists(template.format(bus=1)):
         return None
     try:
         result = run_fixed(["modprobe", "usbmon"], 15, runner)
     except (OSError, subprocess.SubprocessError) as exc:
-        return f"modprobe usbmon nicht ausführbar: {exc}"
+        return f"modprobe usbmon could not be run: {exc}"
     if result.returncode != 0:
-        return f"modprobe usbmon fehlgeschlagen: {(result.stderr or '').strip()[:200]}"
+        return f"modprobe usbmon failed: {(result.stderr or '').strip()[:200]}"
     return None
 
 
@@ -68,10 +69,10 @@ class UsbmonReader(threading.Thread):
         self._stop_event = threading.Event()
         self.opened = False
         self.error: Optional[str] = None
-        self.matched = 0  # Zeilen der beobachteten Geräte (nur Zähler, kein Inhalt)
+        self.matched = 0  # lines of the watched devices (counter only, no content)
 
     def set_devices(self, devnums: Iterable[int]) -> None:
-        self._markers = _markers(self.bus, devnums)  # atomare Zuweisung
+        self._markers = _markers(self.bus, devnums)  # atomic assignment
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -97,7 +98,7 @@ class UsbmonReader(threading.Thread):
                     self.error = f"{type(exc).__name__}: {exc}"
                     break
                 if not chunk:
-                    break  # Dateiende (nur bei Testdateien, usbmon endet nie von selbst)
+                    break  # end of file (only with test files, usbmon never ends on its own)
                 buffer += chunk
                 *lines, buffer = buffer.split(b"\n")
                 if len(buffer) > MAX_PARTIAL_LINE:
@@ -110,7 +111,7 @@ class UsbmonReader(threading.Thread):
     def _process_line(self, raw: bytes) -> None:
         markers = self._markers
         if not any(marker in raw for marker in markers):
-            return  # fremdes Gerät: nicht decodieren, nicht speichern
+            return  # foreign device: do not decode, do not store
         record = parse_usbmon_line(raw.decode("ascii", "replace"))
         if record is None:
             return

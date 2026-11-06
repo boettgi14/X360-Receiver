@@ -1,9 +1,11 @@
-"""Controller ausschalten: nacheinander an alle Ziele, mit Zeitlimit.
+"""Turning controllers off: one target after the other, with a deadline.
 
-Wird vom Knopf „Alle Controller jetzt ausschalten“ (Plugin) und vom Dienst beim Herunterfahren
-(`poweroff_cli`, siehe `poweroff_unit`) benutzt. Ob das System herunterfährt, wird hier nicht
-geprüft: Das Plugin selbst wird von Decky beim Herunterfahren nicht zuverlässig gestoppt
-(am Gerät beobachtet), deshalb übernimmt ein eigener systemd-Dienst diese Aufgabe.
+Used by the "Turn off all controllers now" button (plugin) and by the service that runs on shutdown
+(`poweroff_cli`, see `poweroff_unit`). This module does not check whether the system is shutting
+down: Decky does not reliably stop the plugin on shutdown (observed on the device), which is why a
+separate systemd service takes over that job.
+
+Error texts are English and language-neutral (they end up in `last-run.json` and in the diagnostics).
 """
 
 from __future__ import annotations
@@ -13,8 +15,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import actions
 
-# Jeder Slot braucht mit der am Gerät bewährten Abfolge (Verwerfen 0,3 s, Senden, Mitlesen 0,6 s) etwa 1 s.
-# Der Dienst darf nach `TimeoutStopSec` (poweroff_unit) beendet werden; das Limit liegt darunter.
+# With the sequence proven on the device (discard 0.3 s, send, listen 0.6 s) each slot takes about 1 s.
+# The service may be killed after `TimeoutStopSec` (poweroff_unit); the limit stays below that.
 DEADLINE_S = 8.0
 RETRY_S = 0.2
 
@@ -28,11 +30,11 @@ def power_off_targets(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Dict[str, object]:
-    """Sendet den Ausschaltbefehl nacheinander an alle Ziele, höchstens `deadline_s` Sekunden lang.
+    """Sends the turn-off command to all targets in turn, for at most `deadline_s` seconds.
 
-    Läuft gerade ein anderer Zugriff, wird bis zur Frist wiederholt. Gibt Zähler und Fehlertexte zurück.
+    If another access is running, it retries until the deadline. Returns counters and error texts.
     """
-    power_off = power_off or actions.power_off  # zur Laufzeit gebunden, damit Tests ersetzen können
+    power_off = power_off or actions.power_off  # bound at run time so tests can replace it
     start = clock()
     sent = confirmed = skipped = 0
     errors: List[str] = []
@@ -47,10 +49,10 @@ def power_off_targets(
             sent += 1
             confirmed += 1 if result.get("confirmed") else 0
         else:
-            errors.append(f"Bus {bus} Gerät {devnum} Slot {slot + 1}: {result.get('error', 'Fehler')}")
+            errors.append(f"bus {bus} device {devnum} slot {slot + 1}: {result.get('error', 'unknown error')}")
         if clock() - start >= deadline_s:
             skipped = len(pending) - index - 1
             break
     if skipped:
-        errors.append(f"{skipped} Slot(s) nicht mehr erreicht (Zeitlimit)")
+        errors.append(f"{skipped} slot(s) not reached any more (deadline)")
     return {"ok": not errors, "sent": sent, "confirmed": confirmed, "errors": errors}

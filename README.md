@@ -1,54 +1,66 @@
 # X360 Receiver
 
-Decky-Loader-Plugin für den **Xbox 360 Wireless Gaming Receiver** auf Bazzite und SteamOS (Gaming Mode). Es zeigt den Akkustand aller verbundenen Controller, steuert ihre LEDs und schaltet sie aus – auch beim Standby und beim Herunterfahren. Mehrere Receiver werden unterstützt. Die Oberfläche ist deutsch.
+Decky Loader plugin for the **Xbox 360 Wireless Gaming Receiver** on Bazzite and SteamOS (Gaming Mode). It shows the battery level of all connected controllers, controls their LEDs and turns them off, including on standby and on shutdown. Several receivers are supported. The UI is available in **English and German** and follows the Steam language (see [Languages](#languages)).
 
-> **Stand:** Das Plugin läuft auf einem Bazzite-Gerät mit einem Receiver (USB-ID `045E:0719`) und einem Gamepad (2 AA-Akkus, kein Ladekabel). Akkuabfrage, LED-Zuordnung, Ausschalten und das Layout sind dort geprüft. Auch „Beim Herunterfahren ausschalten“ (über einen systemd-Dienst, siehe [Hinweis](#beim-herunterfahren-ausschalten)) funktioniert dort. Was gesichert ist und was nur aus Quelltexten oder Unit-Tests stammt, steht in [`PLAN.md`](PLAN.md) und [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+> **Status:** The plugin runs on a Bazzite device with one receiver (USB ID `045E:0719`) and one gamepad (2 AA batteries, no charging cable). Battery query, LED assignment, turning off and the layout have been checked there. "Turn off on shutdown" (through a systemd service, see [note](#turn-off-on-shutdown)) works there too. What is confirmed and what only comes from source code or unit tests is listed in [`PLAN.md`](PLAN.md) and [`docs/PROTOCOL.md`](docs/PROTOCOL.md). The English/German UI has been checked against stand-in Decky components and with unit tests only; it has not been seen on a device yet.
 
-## Funktionen
+## Features
 
-| Bereich | Was das Plugin tut |
-|---------|--------------------|
-| **Allgemein** (gilt für alle Receiver) | *Überwachung:* Akku-Status mitlesen (USB-Monitor, standardmäßig aus). *Energie:* „Beim Standby ausschalten“, „Beim Herunterfahren ausschalten“, „Alle Controller jetzt ausschalten“. *Diagnose:* Ergebnis des letzten Laufs beim Herunterfahren. |
-| **Receiver** | Je Receiver ein Abschnitt mit den verbundenen Controllern als ausklappbare Karten. |
-| **Controller-Karte** | Akku als Balken mit Stufe (0 bis 3, das Protokoll kennt nur vier Stufen), „Akku jetzt abfragen“, „Controller ausschalten“, LED-Muster (Modi 0 bis 15; `xpad0` ist Controller 1, `xpad1` Controller 2 …), Details. |
-| **Akku nach dem Start** | Der Receiver meldet den Akku nur beim Verbinden. Deshalb fragt das Plugin direkt nach dem Start einmal alle schon verbundenen Controller ab und merkt sich den Wert. |
+UI texts are quoted in English below; the German UI shows the translations from `src/i18n.ts`.
 
-## Wie es funktioniert
+| Area | What the plugin does |
+|------|----------------------|
+| **General** (applies to all receivers) | *Monitoring:* "Read battery status" (USB monitor, off by default). *Power:* "Turn off on standby", "Turn off on shutdown", "Turn off all controllers now". *Diagnostics:* result of the last run on shutdown. |
+| **Receiver** | One section per receiver, with the connected controllers as expandable cards. |
+| **Controller card** | Battery as a bar with a level (0 to 3, the protocol only knows four levels), "Query battery now", "Turn off controller", LED pattern (modes 0 to 15; `xpad0` is controller 1, `xpad1` controller 2 …), details. |
+| **Battery after start** | The receiver reports the battery only when a controller connects. That is why the plugin queries all already connected controllers once right after it starts and remembers the value. |
 
-Der Kernel-Treiber `xpad` zeigt weder Akku noch Ausschalten an. Das Plugin nutzt vier Wege (Einzelheiten und Vertrauensgrade in `PLAN.md`):
+## Languages
 
-1. **sysfs** (immer): Receiver erkennen, belegte Slots, LEDs unter `/sys/class/leds/xpadN/brightness`, Standby-Verhalten über `/sys/module/xpad/parameters/auto_poweroff`.
-2. **USB-Monitor `usbmon`** (optional, Schalter „Akku-Status mitlesen“): liest die Pakete des Receivers mit und dekodiert Verbindung und Akkustufe. Er sieht den ganzen Bus, das Plugin filtert sofort nach Bus und Gerät, verwirft alles andere und zählt Eingabepakete nur.
-3. **Kurzer Zugriff über libusb** (Akku abfragen, Ausschalten): `xpad` gibt die Schnittstelle des Slots kurz frei, das Plugin sendet `00 00 00 40` (Akkuanfrage) oder `00 00 08 C0` (Ausschalten), danach bindet `xpad` wieder. Der betroffene Controller verschwindet dabei etwa 3 Sekunden.
-4. **systemd-Dienst** (nur für „Beim Herunterfahren ausschalten“).
+The plugin UI is available in **English** and **German**. It follows the language of the Steam client, so it behaves the same on SteamOS and on Bazzite, and the language of the operating system does not matter:
 
-### Beim Herunterfahren ausschalten
+- The frontend reads `navigator.language` (and `navigator.languages`) and uses German for `de`, `de-DE` and similar; every other language falls back to English. Decky Loader detects its own UI language the same way (`i18next` with `lng: navigator.language`, read in the Decky source on 2026-11-06). That `navigator.language` really follows the Steam language inside Steam's browser has **not** been checked on a device yet.
+- All UI text lives in `src/i18n.ts`. The English catalog defines the shape of every message and the German catalog must match it, so a missing or mistyped German text fails `npm run typecheck`.
+- The Python backend is language-neutral: it never produces text in the user's language. Failed actions return an English technical message plus, where a user can act on the failure, a stable code from `x360w.error_codes` (and the diagnostics verdict as a code with parameters). The frontend translates those. Technical details such as kernel or libusb messages are shown as they are (English).
+- External programs run with `LANG=C` and `LC_ALL=C` (`safe_exec.py`), `tools/discover.sh` does the same, and the systemd unit text is English, so nothing depends on the system language.
+- **Adding a language:** add an entry to `MESSAGES` in `src/i18n.ts` (the compiler lists every missing text) and a branch for it in `detectLanguage`, then extend `tools/frontend_render_test.mjs`.
 
-`xpad` hat keinen Hook fürs Herunterfahren, und Decky beendet das Plugin dabei nicht zuverlässig: Am Gerät bekam es das Stoppsignal, rief aber `_unload` nie auf und wurde nach 5 Sekunden mit SIGKILL beendet (zwei fremde Plugins ebenso, siehe `PLAN.md`, Risiko 18). Deshalb richtet das Plugin beim Einschalten der Option einen kleinen systemd-Dienst ein:
+## How it works
+
+The kernel driver `xpad` does not show the battery and offers no way to turn a controller off. The plugin uses four ways (details and confidence levels in `PLAN.md`):
+
+1. **sysfs** (always): detect receivers, occupied slots, LEDs under `/sys/class/leds/xpadN/brightness`, standby behavior through `/sys/module/xpad/parameters/auto_poweroff`.
+2. **USB monitor `usbmon`** (optional, switch "Read battery status"): reads the receiver's packets and decodes connection and battery level. It sees the whole bus; the plugin filters immediately by bus and device, discards everything else and only counts input packets.
+3. **Short access through libusb** (query battery, turn off): `xpad` briefly releases the slot's interface, the plugin sends `00 00 00 40` (battery request) or `00 00 08 C0` (turn off), then `xpad` binds again. The affected controller disappears for about 3 seconds.
+4. **systemd service** (only for "Turn off on shutdown").
+
+### Turn off on shutdown
+
+`xpad` has no hook for shutdown, and Decky does not reliably stop the plugin on shutdown: on the device it received the stop signal, never called `_unload` and was killed with SIGKILL after 5 seconds (two foreign plugins as well, see `PLAN.md`, risk 18). That is why the plugin sets up a small systemd service when the option is switched on:
 
 - `/etc/systemd/system/x360-receiver-poweroff.service` (`Type=oneshot`, `RemainAfterExit=yes`, `ExecStop`)
-- `/var/lib/x360-receiver/` mit einer Kopie des Programms (`poweroff.py`, `x360w/`) und dem Bericht `last-run.json`
+- `/var/lib/x360-receiver/` with a copy of the program (`poweroff.py`, `x360w/`) and the report `last-run.json`
 
-Beim Herunterfahren und Neustart führt systemd `ExecStop` aus: Das Programm ermittelt die verbundenen Controller wie der Knopf „Alle Controller jetzt ausschalten“ und schaltet sie aus. Beim Ausschalten der Option und beim Entfernen des Plugins werden beide Orte wieder gelöscht. Auf dem Testgerät gehen die Controller damit beim Herunterfahren aus; Neustart und mehrere gleichzeitig verbundene Controller sind nicht gezielt geprüft.
+On shutdown and reboot systemd runs `ExecStop`: the program finds the connected controllers the same way as the "Turn off all controllers now" button and turns them off. When the option is switched off and when the plugin is removed, both places are deleted again. On the test device the controllers turn off on shutdown this way; reboot and several controllers connected at once have not been tested specifically.
 
-## Voraussetzungen
+## Requirements
 
-- Bazzite oder SteamOS mit [Decky Loader](https://decky.xyz/) (Gaming Mode)
-- Xbox 360 Wireless Gaming Receiver (`045E:0291`, `045E:0719` oder `045E:02A9`) und der Kernel-Treiber `xpad` (Standard)
-- Das Plugin läuft mit Root-Rechten (`"flags": ["root"]` in `plugin.json`), weil es libusb, sysfs und usbmon braucht
-- `libusb-1.0` und `/usr/bin/python3` auf dem Gerät (nur für den systemd-Dienst; auf Bazzite vorhanden, der Dienst läuft dort)
+- Bazzite or SteamOS with [Decky Loader](https://decky.xyz/) (Gaming Mode), with the Steam UI in English or German (other languages show the English UI)
+- Xbox 360 Wireless Gaming Receiver (`045E:0291`, `045E:0719` or `045E:02A9`) and the kernel driver `xpad` (default)
+- The plugin runs with root rights (`"flags": ["root"]` in `plugin.json`) because it needs libusb, sysfs and usbmon
+- `libusb-1.0` and `/usr/bin/python3` on the device (only for the systemd service; present on Bazzite, the service runs there)
 
-## Installieren und Entfernen
+## Installing and removing
 
-Das Plugin ist privat: Es gibt keinen Store-Eintrag, du baust die Zip selbst (siehe unten).
+The plugin is private: there is no store entry, you build the zip yourself (see below).
 
-**Installieren** (einmalig Entwicklermodus, danach nur die Zip):
-1. `X360-Receiver.zip` auf das Gerät legen (z. B. nach `~/Downloads`).
-2. Decky-Einstellungen → „Allgemein“: **Developer mode** einschalten. Es erscheint der Reiter „Entwickler“.
-3. Dort unter „Third-Party Plugins“ bei **Install Plugin from ZIP File** auf **Browse** drücken, die Zip wählen, den Hinweis bestätigen.
-4. Das Plugin erscheint im Decky-Menü als „X360 Receiver“.
+**Install** (developer mode once, then only the zip):
+1. Put `X360-Receiver.zip` on the device (e.g. into `~/Downloads`).
+2. Decky settings → "General": switch on **Developer mode**. The "Developer" tab appears.
+3. There, under "Third-Party Plugins", press **Browse** next to **Install Plugin from ZIP File**, choose the zip, confirm the notice.
+4. The plugin appears in the Decky menu as "X360 Receiver".
 
-**Entfernen:** Im Decky-Menü bei „X360 Receiver“ **Uninstall** wählen. Das Plugin stellt `auto_poweroff` auf den Ausgangswert zurück, entfernt den systemd-Dienst samt `/var/lib/x360-receiver/` und löscht seine Einstellungs-, Daten- und Log-Ordner. Nicht zurückgenommen werden das geladene Kernelmodul `usbmon` (bis zum Neustart) und ein gesetzter LED-Modus (bis zum nächsten Verbinden). Wurde der Plugin-Ordner an Decky vorbei gelöscht, bleibt der Dienst liegen:
+**Remove:** In the Decky menu choose **Uninstall** for "X360 Receiver". The plugin resets `auto_poweroff` to its original value, removes the systemd service together with `/var/lib/x360-receiver/`, and deletes its settings, data and log folders. Not undone are the loaded kernel module `usbmon` (until reboot) and a set LED mode (until the next connect). If the plugin folder was deleted behind Decky's back, the service stays behind:
 
 ```bash
 sudo systemctl disable --now x360-receiver-poweroff.service
@@ -56,78 +68,82 @@ sudo rm -rf /etc/systemd/system/x360-receiver-poweroff.service /var/lib/x360-rec
 sudo systemctl daemon-reload
 ```
 
-**Aktualisieren:** dieselbe Zip noch einmal installieren. Decky entfernt dabei zuerst die alte Fassung (inklusive Aufräumen); gespeicherte Einstellungen gehen verloren, die Optionen sind danach aus.
+**Update:** install the same zip again. Decky first removes the old version (including cleanup); saved settings are lost, the options are off afterwards.
 
-## Bauen
+## Building
 
-Das Backend ist reines Python und braucht keinen Build. Gebaut wird nur das Frontend (TypeScript/React mit der Decky-Toolchain).
+The backend is plain Python and needs no build. Only the frontend is built (TypeScript/React with the Decky toolchain).
 
-**Voraussetzungen:** Node.js ab 18 mit npm, Python 3.
+**Requirements:** Node.js 18 or newer with npm, Python 3.
 
 ```bash
-npm ci                                  # Abhängigkeiten laut package-lock.json
-npm run typecheck                       # TypeScript prüfen
-npm run build                           # erzeugt dist/index.js (Rollup)
+npm ci                                  # dependencies according to package-lock.json
+npm run typecheck                       # check TypeScript (also checks that the German texts match the English ones)
+npm run build                           # creates dist/index.js (Rollup)
 python3 -I tools/make_zip.py X360-Receiver.zip
 ```
 
-`make_zip.py` packt `plugin.json`, `package.json`, `main.py`, `dist/index.js` und `py_modules/` in die Form, die Decky erwartet (`X360 Receiver/…`). Quelltext des Frontends, Tests und Mitschnitte kommen nicht hinein. `npm run watch` baut bei Änderungen neu. `pnpm` funktioniert ebenfalls (die Vorlage von Decky nutzt es), die mitgelieferte Lockdatei gehört aber zu npm.
+`make_zip.py` packs `plugin.json`, `package.json`, `main.py`, `dist/index.js` and `py_modules/` into the form Decky expects (`X360 Receiver/…`). The frontend's source code, tests and captures are not included. `npm run watch` rebuilds on changes. `pnpm` works as well (Decky's template uses it), but the lock file that comes with the repo belongs to npm.
 
-Hinweis: `@rollup/rollup-linux-x64-musl` steht bewusst unter `optionalDependencies` (Vorlage der Decky-Entwickler für musl-Umgebungen); auf glibc-Systemen wird es übersprungen.
+Note: `@rollup/rollup-linux-x64-musl` is deliberately listed under `optionalDependencies` (the Decky developers' template does this for musl environments); on glibc systems it is skipped.
 
 ## Tests
 
 ```bash
-python3 -I -m unittest discover -s tests          # Backend, ohne Hardware und ohne root
+python3 -I -m unittest discover -s tests          # backend, without hardware and without root
 ```
 
-Die zwei Zip-Tests (`test_packaging.py`) werden übersprungen, solange `dist/index.js` fehlt; nach `npm run build` laufen sie mit.
+The two zip tests (`test_packaging.py`) are skipped as long as `dist/index.js` is missing; after `npm run build` they run too.
 
-Die Tests laufen vollständig mit Attrappen: Parser und Zustandsautomat, Wiedergabe von vier echten usbmon-Mitschnitten (`tests/fixtures/`), der kurze Zugriff mit Attrappen-Backend, `main.py` mit einem nachgebauten `decky`-Modul. Der systemd-Dienst wird nur in Temp-Ordnern mit einem nachgebauten `systemctl` getestet, nie unter `/etc` oder `/var`.
+The tests run entirely with stand-ins: parser and state machine, replay of four real usbmon captures (`tests/fixtures/`), the short access with a dummy backend, `main.py` with a reconstructed `decky` module. The systemd service is only tested in temp folders with a reconstructed `systemctl`, never under `/etc` or `/var`. `tests/test_i18n_contract.py` checks that the backend's error codes, diagnostics codes, LED modes and controller types all have a translation in `src/i18n.ts`.
 
-Rendertest für das gebaute Frontend (gestellte Decky-Bausteine in jsdom; kein Test gegen Steams echte Oberfläche):
+The tests assume POSIX paths (for example `/var/lib/...` in the service text); on Windows many of them fail for that reason, so run them on Linux or in WSL.
+
+Render test for the built frontend (stand-in Decky components in jsdom; no test against Steam's real UI). It runs the whole check twice, once with the UI in English and once in German, and also checks the language detection:
 
 ```bash
 mkdir /tmp/render && cd /tmp/render && npm install react react-dom jsdom
-node <Pfad-zum-Repo>/tools/frontend_render_test.mjs <Pfad-zum-Repo>/dist/index.js
+node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 ```
 
-## Aufbau des Repos
+## Repository layout
 
-| Pfad | Inhalt |
-|------|--------|
-| `plugin.json`, `package.json`, `rollup.config.js`, `tsconfig.json`, `main.py`, `src/index.tsx` | Decky-Plugin (Metadaten, Backend-Einstieg, Oberfläche), mit der offiziellen Vorlage abgeglichen |
-| `py_modules/x360w/` | Backend-Bibliothek: Protokoll (`protocol`), usbmon-Parser und -Leser, Zustandsautomat (`monitor`), Überwachungsdienst (`service`), LED und `auto_poweroff` (`controls`), Receiver-Erkennung (`discovery`), Ansicht je Receiver (`view`), kurzer Zugriff und Aktionen (`takeover`, `actions`), Akku-Zwischenspeicher (`battery_cache`), Ausschalten mehrerer Controller (`shutdown`), systemd-Dienst (`poweroff_unit`, `poweroff_cli`), Aufräumen beim Entfernen (`cleanup`), feste Programmaufrufe (`safe_exec`) |
-| `tests/` | Unit-Tests und Mitschnitte (`tests/fixtures/`) |
-| `tools/make_zip.py` | baut die Zip für Decky |
-| `tools/frontend_render_test.mjs` | Rendertest des gebauten Frontends |
-| `tools/discover.sh` | nur lesende Systemprüfung (Receiver, `xpad`, LEDs, usbmon) |
-| `tools/capture_usbmon.py` | zeichnet die Pakete eines Receivers auf und dekodiert sie (root, nur Bus und Gerät aus `discover.sh`) |
-| `tools/probe_takeover.py` | sendet Akkuanfrage oder Ausschalten an einen Slot (root; nicht während eines Spiels) |
-| `docs/PROTOCOL.md` | Protokoll des Receivers, jede Aussage mit Vertrauensgrad |
-| `PLAN.md` | Plan, Zugriffswege, Messungen, offene Risiken, Prüfschritte nach der Installation |
-| `CLAUDE.md` | Projektregeln für die Arbeit mit Claude Code |
+| Path | Content |
+|------|---------|
+| `plugin.json`, `package.json`, `rollup.config.js`, `tsconfig.json`, `main.py`, `src/index.tsx` | Decky plugin (metadata, backend entry, UI), compared with the official template |
+| `src/i18n.ts` | All UI texts in English and German, language detection, translation of error codes and diagnostics |
+| `py_modules/x360w/` | Backend library: protocol (`protocol`), usbmon parser and reader, state machine (`monitor`), monitoring service (`service`), LED and `auto_poweroff` (`controls`), receiver discovery (`discovery`), view per receiver (`view`), short access and actions (`takeover`, `actions`), battery cache (`battery_cache`), turning off several controllers (`shutdown`), systemd service (`poweroff_unit`, `poweroff_cli`), cleanup on removal (`cleanup`), fixed program calls (`safe_exec`), error codes for the frontend (`error_codes`) |
+| `tests/` | Unit tests and captures (`tests/fixtures/`) |
+| `tools/make_zip.py` | builds the zip for Decky |
+| `tools/frontend_render_test.mjs` | render test of the built frontend (both languages) |
+| `tools/discover.sh` | read-only system check (receiver, `xpad`, LEDs, usbmon) |
+| `tools/capture_usbmon.py` | records and decodes a receiver's packets (root, only bus and device from `discover.sh`) |
+| `tools/probe_takeover.py` | sends a battery request or turn-off to one slot (root; not during a game) |
+| `docs/PROTOCOL.md` | protocol of the receiver, each statement with a confidence level |
+| `PLAN.md` | plan, access paths, measurements, open risks, checks after installation |
+| `CLAUDE.md` | project rules for working with Claude Code |
 
-## Sicherheit und Datenschutz
+## Security and privacy
 
-- Das Backend läuft als root, schreibt aber nur auf die benannten sysfs-Pfade und kennt genau diese fremden Aufrufe: `modprobe usbmon`, `systemctl daemon-reload | enable --now | disable --now` für den einen eigenen Dienst (alle mit absolutem Pfad und bereinigter Umgebung, ohne Nutzereingabe) und die beiden USB-Befehle des kurzen Zugriffs an bekannte Receiver und Slots 0 bis 3.
-- Der Dienst läuft als root. Sein Ordner und seine Dateien gehören root und sind nur für root schreibbar (0644/0755, unabhängig von der `umask`); Symlinks an diesen Orten werden abgelehnt.
-- usbmon ist standardmäßig aus und wird nur mit dem Schalter „Akku-Status mitlesen“ geladen. Mitschnitte anderer Geräte werden sofort verworfen und nie gespeichert oder geloggt; Eingabepakete werden nur gezählt.
-- Es gibt keine Netzwerkzugriffe.
+- The backend runs as root but writes only to the named sysfs paths and knows exactly these external calls: `modprobe usbmon`, `systemctl daemon-reload | enable --now | disable --now` for its one own service (all with an absolute path and a sanitized environment, without user input) and the two USB commands of the short access to known receivers and slots 0 to 3.
+- The service runs as root. Its folder and files belong to root and are writable only by root (0644/0755, independent of the `umask`); symlinks at these locations are rejected.
+- usbmon is off by default and is only loaded with the "Read battery status" switch. Captures of other devices are discarded immediately and never stored or logged; input packets are only counted.
+- There is no network access.
 
-## Bekannte Grenzen
+## Known limits
 
-- Nur 4 Akkustufen, keine Prozentwerte (so meldet es das Protokoll).
-- Akkuabfrage und Ausschalten lassen den betroffenen Controller etwa 3 Sekunden verschwinden. Wie Steam darauf reagiert, ist nicht gezielt geprüft; nicht während eines Spiels abfragen.
-- Mehrere Receiver: Die Zuordnung LED ↔ Controller ist dann nicht gesichert (die Receiver teilen sich die LED-Nummern). Auf dem Testgerät gab es nur einen Receiver.
-- Chatpad und Headset werden nicht unterstützt.
-- „Beim Herunterfahren ausschalten“ ist nur mit einem Receiver und einem Controller geprüft, und nur beim Herunterfahren (nicht gezielt beim Neustart).
-- Fokus-Navigation mit dem Controller in der Plugin-Oberfläche ist nicht gezielt geprüft.
+- Only 4 battery levels, no percentages (that is what the protocol reports).
+- Battery query and turning off make the affected controller disappear for about 3 seconds. How Steam reacts is not specifically checked; do not query during a game.
+- Several receivers: the assignment LED ↔ controller is then not guaranteed (the receivers share the LED numbers). There was only one receiver on the test device.
+- Chatpad and headset are not supported.
+- "Turn off on shutdown" has only been tested with one receiver and one controller, and only on shutdown (not specifically on reboot).
+- Focus navigation with the controller in the plugin UI has not been specifically tested.
+- Languages: only English and German. Which language the UI picks on a real device (`navigator.language` inside Steam) has not been verified yet. Technical error details from the backend are shown untranslated (English).
 
-## Lizenz
+## License
 
-[GNU General Public License, Version 2 oder (nach Wahl) jede spätere Version](LICENSE) (`GPL-2.0-or-later`).
+[GNU General Public License, version 2 or (at your option) any later version](LICENSE) (`GPL-2.0-or-later`).
 
-Warum diese Lizenz: Das Protokollwissen und die Tabelle der LED-Modi stammen aus dem Linux-Kernel-Treiber `xpad` (`drivers/input/joystick/xpad.c`, `GPL-2.0-or-later`). `package.json` trägt dieselbe Kennung. Die Lizenz gilt für den Quelltext in diesem Repo; die Abhängigkeiten (React, Decky-Bibliotheken u. a.) behalten ihre eigenen Lizenzen. Das ist keine Rechtsberatung.
+Why this license: The protocol knowledge and the table of LED modes come from the Linux kernel driver `xpad` (`drivers/input/joystick/xpad.c`, `GPL-2.0-or-later`). `package.json` carries the same identifier. The license applies to the source code in this repo; the dependencies (React, Decky libraries and others) keep their own licenses. This is not legal advice.
 
-„Xbox“ und „Xbox 360“ sind Marken der Microsoft Corporation. X360 Receiver ist ein unabhängiges Projekt und steht in keiner Verbindung zu Microsoft; die Namen werden nur genannt, um die unterstützte Hardware zu bezeichnen.
+"Xbox" and "Xbox 360" are trademarks of Microsoft Corporation. X360 Receiver is an independent project and has no connection to Microsoft; the names are only used to name the supported hardware.

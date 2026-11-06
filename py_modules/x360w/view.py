@@ -1,17 +1,16 @@
-"""Ansicht für das Frontend: je Receiver die verbundenen Controller samt Zusatzdaten.
+"""View for the frontend: per receiver, the connected controllers plus extra data.
 
-Reine Logik ohne Ein-/Ausgabe. Die Anwesenheit eines Controllers kommt aus zwei Quellen:
-  - "monitor": usbmon-Mitschnitt (am Gerät bestätigt), nur bei eingeschaltetem Monitor;
-  - "sysfs": von xpad angelegtes Eingabegerät (aus dem Quelltext abgeleitet, am Gerät ungeprüft).
-Zusätzlich gilt: Eine LED `xpadN` existiert nur bei verbundenem Controller (am Gerät bestätigt).
-Gibt es mehr LEDs als erkannte Controller, steht der Rest in `unlocated_count`.
+Pure logic without input/output. A controller's presence comes from two sources:
+  - "monitor": usbmon capture (confirmed on the device), only while the monitor is on;
+  - "sysfs": the input device xpad creates (derived from the source code, unchecked on the device).
+In addition: A LED `xpadN` exists only while a controller is connected (confirmed on the device).
+If there are more LEDs than detected controllers, the rest goes into `unlocated_count`.
 
-LED-Zuordnung (Vorgabe des Nutzers, an seinem Gerät beobachtet: xpad0 = Controller 1, xpad1 =
-Controller 2 …): Die LEDs eines Receivers werden nach Nummer sortiert und den Controllern nach
-Slot-Reihenfolge zugeordnet, sofern ihre Anzahl übereinstimmt. xpad und der Receiver vergeben
-LED-Nummer und Slot beide nach „kleinste freie“, bei einem Receiver bleiben sie dadurch im Gleichschritt.
-Bei mehreren Receivern teilen sie sich die LED-Nummern; dann kann die Reihenfolge abweichen, und die
-Zuordnung ist nicht gesichert.
+LED assignment (as observed on the user's device: xpad0 = controller 1, xpad1 = controller 2 …):
+A receiver's LEDs are sorted by number and assigned to the controllers in slot order, provided
+their counts match. xpad and the receiver both hand out LED number and slot as "smallest free", so
+with one receiver they stay in step. With several receivers they share the LED numbers; then the
+order can differ, and the assignment is not guaranteed.
 """
 
 from __future__ import annotations
@@ -55,7 +54,7 @@ def build_receiver_views(
         leds = sorted(led_owners.get(receiver.usb_path, []), key=lambda name: int(name[4:]))
         unassigned: List[str] = leds
         if controllers and len(controllers) == len(leds):
-            for controller, name in zip(controllers, leds):  # controllers sind nach Slot sortiert
+            for controller, name in zip(controllers, leds):  # controllers are sorted by slot
                 controller["led"] = name
             unassigned = []
 
@@ -73,13 +72,13 @@ def build_receiver_views(
 
 
 def _apply_cached_battery(data: dict, key: Tuple, cached: Optional[Dict[Tuple[int, int, int], dict]]) -> None:
-    """Setzt den aktiv abgefragten Akkustand ein, wenn er neuer ist als der des Monitors (oder dieser fehlt)."""
+    """Uses the actively queried battery level if it is newer than the monitor's (or the monitor has none)."""
     entry = (cached or {}).get(key)
     if entry is None:
         return
     monitor_age = data.get("state_age_s")
     if data.get("battery_level") is not None and monitor_age is not None and monitor_age <= entry["age_s"]:
-        return  # der Monitor hat einen neueren Wert
+        return  # the monitor has a newer value
     data["battery_level"] = entry["battery_level"]
     data["battery_type_raw"] = entry["battery_type_raw"]
     data["power_state_raw"] = entry["power_state_raw"]
@@ -88,7 +87,7 @@ def _apply_cached_battery(data: dict, key: Tuple, cached: Optional[Dict[Tuple[in
 
 
 def connected_targets(views: Iterable[dict]) -> List[Tuple[int, int, int]]:
-    """(Bus, Gerät, Slot) aller Controller, deren Slot bekannt ist. Anders als `plan_targets` ohne Raten."""
+    """(bus, device, slot) of all controllers whose slot is known. Unlike `plan_targets`, without guessing."""
     return [
         (view["bus"], view["devnum"], controller["slot"])
         for view in views
@@ -98,10 +97,10 @@ def connected_targets(views: Iterable[dict]) -> List[Tuple[int, int, int]]:
 
 
 def plan_targets(views: Iterable[dict]) -> List[Tuple[int, int, int]]:
-    """(Bus, Gerät, Slot) aller Controller, die ausgeschaltet werden sollen.
+    """(bus, device, slot) of all controllers that should be turned off.
 
-    Ist bekannt, welche Slots belegt sind, nur diese. Ist nur bekannt, dass irgendwo ein Controller
-    verbunden ist (LED vorhanden, Slot unbekannt), alle vier Slots dieses Receivers.
+    If it is known which slots are occupied, only those. If it is only known that a controller is
+    connected somewhere (LED present, slot unknown), all four slots of that receiver.
     """
     targets: List[Tuple[int, int, int]] = []
     for view in views:

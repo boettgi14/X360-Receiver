@@ -1,24 +1,24 @@
-"""Einrichten und Entfernen des systemd-Dienstes „Controller beim Herunterfahren ausschalten“.
+"""Setting up and removing the systemd service "turn off controllers on shutdown".
 
-Warum: Decky stoppt das Plugin beim Herunterfahren nicht zuverlässig (am Gerät beobachtet: Das Plugin
-bekam das Stoppsignal, rief `_unload` aber nie auf und wurde nach 5 s mit SIGKILL beendet; zwei andere
-Plugins ebenso). Ein systemd-Dienst läuft unabhängig davon: `ExecStop` wird beim Herunterfahren und
-Neustart ausgeführt, solange USB noch da ist.
+Why: Decky does not reliably stop the plugin on shutdown (observed on the device: the plugin
+received the stop signal, never called `_unload` and was killed with SIGKILL after 5 s; two other
+plugins behaved the same). A systemd service runs independently of that: `ExecStop` runs on
+shutdown and reboot while USB is still there.
 
-Was angelegt wird (nur auf ausdrücklichen Wunsch, wenn die Option „Beim Herunterfahren ausschalten“
-eingeschaltet wird, und beim Ausschalten der Option und beim Entfernen des Plugins wieder gelöscht):
-  /etc/systemd/system/x360-receiver-poweroff.service   Dienst (Type=oneshot, RemainAfterExit)
-  /var/lib/x360-receiver/                              Kopie des Programms (root-eigen, nicht schreibbar für andere)
-      poweroff.py, x360w/*.py, last-run.json (Bericht des letzten Laufs)
+What gets created (only on explicit request, when the option "Turn off on shutdown" is switched on,
+and deleted again when the option is switched off and when the plugin is removed):
+  /etc/systemd/system/x360-receiver-poweroff.service   service (Type=oneshot, RemainAfterExit)
+  /var/lib/x360-receiver/                              copy of the program (owned by root, not writable by others)
+      poweroff.py, x360w/*.py, last-run.json (report of the last run)
 
-Fremde Aufrufe (fest, ohne Nutzereingabe, über `safe_exec.run_fixed`): `systemctl daemon-reload`,
-`systemctl enable --now <Dienst>`, `systemctl disable --now <Dienst>`.
+External calls (fixed, no user input, through `safe_exec.run_fixed`): `systemctl daemon-reload`,
+`systemctl enable --now <service>`, `systemctl disable --now <service>`.
 
-Sicherheit: Das Programm läuft als Root. Verzeichnis und Dateien gehören deshalb Root und sind nur für Root
-schreibbar; Symlinks an den Zielorten werden abgelehnt.
+Security: The program runs as root. Directory and files therefore belong to root and are writable
+only by root; symlinks at the target locations are rejected.
 
-Am Gerät bestätigt (Nutzer, 2026-11-05): Der Dienst läuft auf Bazzite und schaltet die Controller beim
-Herunterfahren aus. Nicht gezielt geprüft: Neustart und mehrere Controller.
+Confirmed on the device (user, 2026-11-05): The service runs on Bazzite and turns the controllers
+off on shutdown. Not specifically tested: reboot and several controllers.
 """
 
 from __future__ import annotations
@@ -39,11 +39,12 @@ LIB_DIR = Path("/var/lib/x360-receiver")
 ENTRY_NAME = "poweroff.py"
 PACKAGE_NAME = "x360w"
 LAST_RUN_NAME = "last-run.json"
-SYSTEMCTL_TIMEOUT_S = 20.0  # daemon-reload und enable --now können einen Moment dauern
+SYSTEMCTL_TIMEOUT_S = 20.0  # daemon-reload and enable --now can take a moment
 
-# Alle Module, die `poweroff_cli` zum Laufen braucht (ein Test prüft, dass die Kopie für sich allein importierbar ist).
-# Die `__init__.py` des Plugins zieht das ganze Paket nach (Dienst, Monitor …); die Kopie bekommt eine leere.
+# All modules `poweroff_cli` needs to run (a test checks that the copy can be imported on its own).
+# The plugin's `__init__.py` pulls in the whole package (service, monitor …); the copy gets an empty one.
 HELPER_MODULES = (
+    "error_codes.py",
     "protocol.py",
     "usbmon.py",
     "monitor.py",
@@ -56,10 +57,10 @@ HELPER_MODULES = (
     "poweroff_cli.py",
 )
 
-INIT_SOURCE = '''"""x360w, Kopie für den Dienst x360-receiver-poweroff (vom Plugin X360 Receiver angelegt)."""
+INIT_SOURCE = '''"""x360w, copy for the x360-receiver-poweroff service (created by the X360 Receiver plugin)."""
 '''
 
-ENTRY_SOURCE = '''"""Einstieg des Dienstes x360-receiver-poweroff (vom Plugin X360 Receiver angelegt)."""
+ENTRY_SOURCE = '''"""Entry point of the x360-receiver-poweroff service (created by the X360 Receiver plugin)."""
 import os
 import sys
 
@@ -73,12 +74,25 @@ sys.exit(poweroff_cli.main(HERE))
 
 Runner = Callable[..., object]
 
+# What `summarize` can emit; the frontend (src/i18n.ts) has a translation for each
+# (checked by tests/test_i18n_contract.py).
+VERDICT_CODES = (
+    "install_failed",
+    "not_installed",
+    "not_run_yet",
+    "run_failed",
+    "run_no_controllers",
+    "run_partial",
+    "run_ok",
+)
+LINE_KEYS = ("time", "duration", "receivers", "targets", "result", "error", "write_error")
+
 
 def render_unit(lib_dir: Path = LIB_DIR) -> str:
     entry = lib_dir / ENTRY_NAME
     return (
         "[Unit]\n"
-        "Description=X360 Receiver: Controller beim Herunterfahren ausschalten (vom Decky-Plugin angelegt)\n"
+        "Description=X360 Receiver: turn off controllers on shutdown (created by the Decky plugin)\n"
         f"RequiresMountsFor={lib_dir}\n"
         "\n"
         "[Service]\n"
@@ -100,11 +114,11 @@ class UnitError(RuntimeError):
 
 def _check_not_symlink(path: Path) -> None:
     if path.is_symlink():
-        raise UnitError(f"{path} ist ein Symlink und wird nicht benutzt")
+        raise UnitError(f"{path} is a symlink and will not be used")
 
 
 def _write_file(path: Path, data: bytes, mode: int = 0o644) -> bool:
-    """Schreibt atomar, nur wenn sich der Inhalt ändert. Gibt zurück, ob geschrieben wurde."""
+    """Writes atomically, only if the content changes. Returns whether anything was written."""
     _check_not_symlink(path)
     try:
         if path.read_bytes() == data and (path.stat().st_mode & 0o777) == mode:
@@ -130,7 +144,7 @@ def _systemctl(runner: Runner, *args: str) -> None:
     code = getattr(result, "returncode", 0)
     if code != 0:
         detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "").strip()[:200]
-        raise UnitError(f"systemctl {' '.join(args)} (Rückgabewert {code}): {detail}")
+        raise UnitError(f"systemctl {' '.join(args)} (return code {code}): {detail}")
 
 
 def install(
@@ -139,7 +153,7 @@ def install(
     unit_dir: Path = UNIT_DIR,
     runner: Optional[Runner] = None,
 ) -> Dict[str, object]:
-    """Legt Programm und Dienst an (oder aktualisiert sie) und startet den Dienst. Wirft nie."""
+    """Creates (or updates) program and service and starts the service. Never raises."""
     runner = runner or subprocess.run
     try:
         sources = {name: (package_dir / name).read_bytes() for name in HELPER_MODULES}
@@ -153,19 +167,19 @@ def install(
         unit_changed = _write_file(unit_dir / UNIT_NAME, render_unit(lib_dir).encode("utf-8"))
         if unit_changed:
             _systemctl(runner, "daemon-reload")
-        _systemctl(runner, "enable", "--now", UNIT_NAME)  # ohne --now wäre er erst nach dem nächsten Start aktiv
+        _systemctl(runner, "enable", "--now", UNIT_NAME)  # without --now it would only be active after the next boot
         return {"ok": True, "changed": changed or unit_changed}
     except Exception as exc:  # OSError, UnitError, subprocess.TimeoutExpired …
         error = f"{type(exc).__name__}: {exc}"[:300]
-        uninstall(lib_dir, unit_dir, runner)  # nichts Halbfertiges liegen lassen
+        uninstall(lib_dir, unit_dir, runner)  # leave nothing half-finished behind
         return {"ok": False, "error": error}
 
 
 def _remove_lib_dir(lib_dir: Path) -> None:
     if lib_dir.name != "x360-receiver":
-        raise UnitError(f"unerwarteter Ordner {lib_dir}")
+        raise UnitError(f"unexpected directory {lib_dir}")
     if lib_dir.is_symlink():
-        raise UnitError(f"{lib_dir} ist ein Symlink und wird nicht gelöscht")
+        raise UnitError(f"{lib_dir} is a symlink and will not be deleted")
     if lib_dir.is_dir():
         shutil.rmtree(lib_dir)
 
@@ -175,14 +189,14 @@ def uninstall(
     unit_dir: Path = UNIT_DIR,
     runner: Optional[Runner] = None,
 ) -> Dict[str, object]:
-    """Entfernt Dienst und Programm. Fehlt etwas, ist das kein Fehler. Wirft nie."""
+    """Removes service and program. Something missing is not an error. Never raises."""
     runner = runner or subprocess.run
     errors: List[str] = []
     unit_path = unit_dir / UNIT_NAME
     had_unit = unit_path.exists() or unit_path.is_symlink()
     try:
-        # Zuerst das Programm löschen: Das Stoppen des Dienstes führt ExecStop aus, das ohne Programm
-        # wegen des „-“ vor dem Befehl ohne Wirkung bleibt (sonst würden die Controller jetzt ausgehen).
+        # Delete the program first: stopping the service runs ExecStop, which has no effect without
+        # the program because of the "-" before the command (otherwise the controllers would turn off now).
         _remove_lib_dir(lib_dir)
     except (OSError, UnitError) as exc:
         errors.append(str(exc)[:200])
@@ -223,50 +237,67 @@ def summarize(
     install_error: Optional[str] = None,
     localtime: Callable[[float], time.struct_time] = time.localtime,
 ) -> Optional[Dict[str, object]]:
-    """Urteil und Zeilen für die Diagnose-Anzeige; None, wenn es nichts zu zeigen gibt."""
+    """Verdict and detail lines for the diagnostics display; None if there is nothing to show.
+
+    The result is language-neutral: `verdict` is a dict with a `code` and its parameters, `lines` is
+    a list of {"key", "value"} pairs. The frontend turns both into text in the user's language.
+
+    Verdict codes (parameters in brackets):
+      install_failed (error)   not_installed   not_run_yet
+      run_failed (error)       run_no_controllers
+      run_partial (sent, total, error)   run_ok (sent, total)
+    The run_* verdicts carry `option_off: True` when the option has been switched off since.
+    """
     if not enabled and last_run is None:
         return None
-    lines: List[str] = []
+    verdict: Dict[str, object]
     if enabled and install_error:
-        verdict = "Der Dienst ist nicht eingerichtet: " + install_error
+        verdict = {"code": "install_failed", "error": install_error}
     elif enabled and not installed:
-        verdict = "Der Dienst ist nicht eingerichtet."
+        verdict = {"code": "not_installed"}
     elif last_run is None:
-        verdict = "Der Dienst ist eingerichtet und hat noch nicht gelaufen. Er läuft beim nächsten Herunterfahren."
+        verdict = {"code": "not_run_yet"}
     else:
         verdict = _verdict_of_run(last_run)
         if not enabled:
-            verdict += " (Option ist jetzt aus.)"
+            verdict["option_off"] = True
+    lines: List[Dict[str, str]] = []
     if last_run is not None:
         lines = _lines_of_run(last_run, localtime)
     return {"verdict": verdict, "lines": lines}
 
 
-def _verdict_of_run(run: dict) -> str:
+def _verdict_of_run(run: dict) -> Dict[str, object]:
     if run.get("error"):
-        return "Der Dienst lief beim letzten Herunterfahren, scheiterte aber: " + str(run["error"])
+        return {"code": "run_failed", "error": str(run["error"])}
     result = run.get("result") or {}
     targets = run.get("targets") or []
     if not targets:
-        return "Der Dienst lief beim letzten Herunterfahren, fand aber keinen verbundenen Controller."
+        return {"code": "run_no_controllers"}
     sent, errors = result.get("sent", 0), result.get("errors") or []
     if errors:
-        return f"Der Dienst lief beim letzten Herunterfahren: {sent} von {len(targets)} Controllern ausgeschaltet, Fehler: {errors[0]}"
-    return f"Der Dienst lief beim letzten Herunterfahren: {sent} von {len(targets)} Controllern ausgeschaltet."
+        return {"code": "run_partial", "sent": sent, "total": len(targets), "error": str(errors[0])}
+    return {"code": "run_ok", "sent": sent, "total": len(targets)}
 
 
-def _lines_of_run(run: dict, localtime: Callable[[float], time.struct_time]) -> List[str]:
-    lines = []
+def _lines_of_run(run: dict, localtime: Callable[[float], time.struct_time]) -> List[Dict[str, str]]:
+    """Detail lines as {"key", "value"}: keys time, duration, receivers, targets, result, error, write_error."""
+    lines: List[Dict[str, str]] = []
+
+    def add(key: str, value: object) -> None:
+        lines.append({"key": key, "value": str(value)})
+
     at = run.get("at")
     if isinstance(at, (int, float)):
-        lines.append("Zeit: " + time.strftime("%Y-%m-%d %H:%M:%S", localtime(at)))
-    lines.append(f"Dauer: {run.get('duration_s', '?')} s, Receiver: {run.get('receivers', '?')}")
-    lines.append(f"Ziele (Bus, Gerät, Slot): {run.get('targets')}")
+        add("time", time.strftime("%Y-%m-%d %H:%M:%S", localtime(at)))
+    add("duration", f"{run.get('duration_s', '?')} s")
+    add("receivers", run.get("receivers", "?"))
+    add("targets", run.get("targets"))
     result = run.get("result")
     if result is not None:
-        lines.append(f"Ergebnis: {result}")
+        add("result", result)
     if run.get("error"):
-        lines.append(f"Fehler: {run['error']}")
+        add("error", run["error"])
     if run.get("write_error"):
-        lines.append(f"Bericht nicht geschrieben: {run['write_error']}")
+        add("write_error", run["write_error"])
     return lines

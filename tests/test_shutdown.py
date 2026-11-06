@@ -1,4 +1,4 @@
-"""Tests für x360w.shutdown: Ausschalten mehrerer Ziele mit Zeitlimit."""
+"""Tests for x360w.shutdown: turning off several targets with a deadline."""
 
 import sys
 import unittest
@@ -23,7 +23,7 @@ class Clock:
 class PowerOffTargetsTests(unittest.TestCase):
     def run_targets(self, fake, targets, deadline=6.0):
         clock = Clock()
-        wrapped = lambda *a, **k: (setattr(clock, "now", clock.now + 0.5), fake(*a, **k))[1]  # jeder Zugriff kostet 0,5 s
+        wrapped = lambda *a, **k: (setattr(clock, "now", clock.now + 0.5), fake(*a, **k))[1]  # each access costs 0.5 s
         return shutdown.power_off_targets(targets, wrapped, deadline, clock, clock.sleep)
 
     def test_all_ok_in_order(self):
@@ -48,19 +48,19 @@ class PowerOffTargetsTests(unittest.TestCase):
 
     def test_error_in_one_slot_does_not_stop_the_others(self):
         def fake(bus, dev, slot):
-            return {"ok": False, "error": "kaputt"} if slot == 1 else {"ok": True, "confirmed": False}
+            return {"ok": False, "error": "broken"} if slot == 1 else {"ok": True, "confirmed": False}
 
         result = self.run_targets(fake, [(1, 4, 0), (1, 4, 1), (1, 4, 2)])
         self.assertEqual(result["sent"], 2)
-        self.assertEqual(result["errors"], ["Bus 1 Gerät 4 Slot 2: kaputt"])
+        self.assertEqual(result["errors"], ["bus 1 device 4 slot 2: broken"])
 
     def test_deadline_skips_remaining_targets(self):
         calls = []
         fake = lambda bus, dev, slot: calls.append(slot) or {"ok": True, "confirmed": True}
-        result = self.run_targets(fake, [(1, 4, s) for s in range(4)], deadline=1.0)  # 2 Zugriffe passen hinein
+        result = self.run_targets(fake, [(1, 4, s) for s in range(4)], deadline=1.0)  # 2 accesses fit in
         self.assertEqual(calls, [0, 1])
         self.assertFalse(result["ok"])
-        self.assertIn("2 Slot(s) nicht mehr erreicht", result["errors"][-1])
+        self.assertIn("2 slot(s) not reached any more", result["errors"][-1])
 
     def test_uses_current_actions_power_off_by_default(self):
         original = actions.power_off

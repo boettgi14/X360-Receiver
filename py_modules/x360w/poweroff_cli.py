@@ -1,13 +1,15 @@
-"""Programm des systemd-Dienstes: schaltet beim Herunterfahren alle verbundenen Controller aus.
+"""Program of the systemd service: turns off all connected controllers on shutdown.
 
-Läuft als Root im Dienst (`poweroff_unit`), unabhängig von Decky und vom Plugin: Decky stoppt das Plugin
-beim Herunterfahren nicht zuverlässig (am Gerät beobachtet), systemd führt `ExecStop` des Dienstes aber aus.
+Runs as root inside the service (`poweroff_unit`), independent of Decky and of the plugin: Decky does
+not reliably stop the plugin on shutdown (observed on the device), but systemd does run the service's
+`ExecStop`.
 
-Ermittelt die Ziele selbst (Receiver per sysfs, belegte Slots per sysfs und LEDs, ohne usbmon-Monitor) und
-sendet dann denselben Ausschaltbefehl wie der Knopf „Alle Controller jetzt ausschalten“. Das Ergebnis
-steht in `last-run.json` (das Plugin zeigt es unter „Diagnose“) und als eine Zeile im Journal.
+It finds the targets itself (receivers through sysfs, occupied slots through sysfs and LEDs, without
+the usbmon monitor) and then sends the same turn-off command as the "Turn off all controllers now"
+button. The result goes to `last-run.json` (the plugin shows it under "Diagnostics") and to the
+journal as a single line.
 
-Datenschutz: Es werden nur Zähler, Ziele und Fehlertexte geschrieben, keine Eingaben.
+Privacy: Only counters, targets and error texts are written, never any input.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ LAST_RUN_NAME = "last-run.json"
 
 
 def plan_targets() -> Tuple[int, List[Tuple[int, int, int]]]:
-    """(Anzahl Receiver, Ziele) wie `Plugin._all_targets`, nur ohne Monitor-Daten."""
+    """(number of receivers, targets) like `Plugin._all_targets`, just without monitor data."""
     receivers = discovery.find_receivers()
     views = view.build_receiver_views(
         receivers,
@@ -39,7 +41,7 @@ def run(
     power_off_targets: Optional[Callable[..., Dict[str, object]]] = None,
     clock: Callable[[], float] = time.time,
 ) -> Dict[str, object]:
-    """Führt den Ablauf aus und gibt den Bericht zurück. Wirft nie."""
+    """Runs the procedure and returns the report. Never raises."""
     power_off_targets = power_off_targets or shutdown.power_off_targets
     began = clock()
     report: Dict[str, object] = {"at": round(began, 2), "receivers": 0, "targets": [], "result": None, "error": None}
@@ -51,7 +53,7 @@ def run(
             report["result"] = power_off_targets(targets)
         else:
             report["result"] = {"ok": True, "sent": 0, "confirmed": 0, "errors": []}
-    except Exception as exc:  # Herunterfahren darf nie an diesem Dienst scheitern
+    except Exception as exc:  # shutting down must never fail because of this service
         report["error"] = f"{type(exc).__name__}: {exc}"[:300]
     report["duration_s"] = round(clock() - began, 2)
     return report
@@ -75,4 +77,4 @@ def main(directory: str) -> int:
     except OSError as exc:
         report["write_error"] = str(exc)[:200]
     print("x360w-poweroff " + json.dumps(report, separators=(",", ":")), flush=True)
-    return 0  # nie ein Fehlerstatus: er würde das Herunterfahren nicht aufhalten, aber das Journal verschmutzen
+    return 0  # never an error status: it would not stop the shutdown, but it would clutter the journal

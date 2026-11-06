@@ -1,4 +1,4 @@
-"""Tests für actions.py mit Attrappen-Backend."""
+"""Tests for actions.py with a dummy backend."""
 
 import sys
 import threading
@@ -18,7 +18,7 @@ EMPTY = bytes.fromhex("000000f000") + bytes(24)
 
 class Fake:
     def __init__(self, answer=(), fail_open=False):
-        # `answer` wird erst nach dem Senden eines Befehls lesbar (wie am echten Gerät)
+        # `answer` only becomes readable after a command is sent (like on the real device)
         self.calls, self.answer, self.replies, self.fail_open = [], list(answer), [], fail_open
 
     def open(self, bus, address):
@@ -45,7 +45,7 @@ class Fake:
 
 class ActionTests(unittest.TestCase):
     def setUp(self):
-        # Zeit schnell ablaufen lassen: listen() nutzt monotonic; Attrappe liefert sofort None
+        # Let time pass quickly: listen() uses monotonic; the dummy returns None immediately
         self._d, self._b, self._p = actions.DRAIN_S, actions.BATTERY_LISTEN_S, actions.POWEROFF_LISTEN_S
         actions.DRAIN_S = actions.BATTERY_LISTEN_S = actions.POWEROFF_LISTEN_S = 0.05
 
@@ -70,7 +70,7 @@ class ActionTests(unittest.TestCase):
         fake = Fake()
         result = actions.power_off(1, 2, 3, lambda: fake)
         self.assertEqual([c for c in fake.calls if c[0] == "write"], [("write", 0x07, build_poweroff())])
-        self.assertEqual(result, {"ok": True, "confirmed": False})  # keine Antwort: nicht bestätigt
+        self.assertEqual(result, {"ok": True, "confirmed": False})  # no answer: not confirmed
         confirmed = actions.power_off(1, 2, 0, lambda: Fake(answer=[STATE_A2, STATE_82, EMPTY]))
         self.assertEqual(confirmed, {"ok": True, "confirmed": True})
 
@@ -78,7 +78,16 @@ class ActionTests(unittest.TestCase):
         result = actions.power_off(1, 2, 0, lambda: Fake(fail_open=True))
         self.assertFalse(result["ok"])
         self.assertIn("ACCESS", result["error"])
-        self.assertFalse(actions.query_battery(1, 2, 9, lambda: Fake())["ok"])  # ungültiger Slot
+        self.assertNotIn("code", result)  # a technical USB error has no translated message
+        self.assertFalse(actions.query_battery(1, 2, 9, lambda: Fake())["ok"])  # invalid slot
+
+    def test_errors_with_a_code_pass_code_and_detail_on(self):
+        def factory():
+            raise UsbError("libusb could not be loaded: no such file", "libusb_unavailable", "no such file")
+
+        result = actions.query_battery(1, 2, 0, factory)
+        self.assertEqual(result, {"ok": False, "error": "libusb could not be loaded: no such file",
+                                  "code": "libusb_unavailable", "detail": "no such file"})
 
     def test_second_access_is_refused_while_busy(self):
         gate = threading.Event()
@@ -98,7 +107,8 @@ class ActionTests(unittest.TestCase):
         release.set()
         t.join(5)
         self.assertFalse(other["ok"])
-        self.assertIn("bereits", other["error"])
+        self.assertEqual(other["error"], actions.BUSY_ERROR)
+        self.assertEqual(other["code"], "busy")
         self.assertTrue(results["a"]["ok"])
 
 

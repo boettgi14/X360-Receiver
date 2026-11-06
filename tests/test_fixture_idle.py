@@ -1,9 +1,9 @@
-"""Tests gegen den Mitschnitt vom 2026-11-05 (gleicher Receiver, ein Gamepad, ca. 393 s).
+"""Tests against the capture of 2026-11-05 (same receiver, one gamepad, about 393 s).
 
-Ablauf im Mitschnitt: Controller aus und wieder ein (bei 6,4 s / 13,1 s), danach ca. 380 s ohne
-Bedienung bis auf eine einzelne Eingabe bei 73,5 s. Die Datei wurde von grep gepuffert und bei
-12288 Byte abgeschnitten; die letzte unvollständige Zeile fehlt. Der geplante LED-Test, das
-5-Sekunden-Halten der Guide-Taste und die Tastendrücke stehen NICHT darin.
+Sequence in the capture: controller off and on again (at 6.4 s / 13.1 s), then about 380 s without
+any operation except a single input at 73.5 s. grep buffered the file and it was cut off at
+12288 bytes; the last incomplete line is missing. The planned LED test, holding the Guide button
+for 5 seconds and the button presses are NOT in it.
 """
 
 import sys
@@ -47,7 +47,7 @@ class IdleCaptureTests(unittest.TestCase):
         self.assertEqual(events, [(6.4, ConnectionEvent(False, False)), (13.1, ConnectionEvent(True, False))])
 
     def test_no_further_state_after_connect(self):
-        """Kern-Ergebnis: Im Leerlauf kommt nach dem Verbinden kein weiteres Statuspaket."""
+        """Key result: when idle, no further state packet arrives after connecting."""
         connect = next(t for t, _, rep in self.incoming if rep == ConnectionEvent(True, False))
         late = [t for t, _, rep in self.incoming if t > connect + 1.0 and isinstance(rep, (StateReport, LinkReport))]
         self.assertEqual(late, [])
@@ -102,7 +102,7 @@ class IdleCaptureTests(unittest.TestCase):
         self.assertEqual(slot["battery_level"], 2)
         self.assertGreater(slot["state_age_s"], 375)
         self.assertEqual(slot["input_count"], 3)
-        # leeres Paket, f8 01, f8 02 und die drei Header-Folgepakete 20 1D / 30 03 / 40 01
+        # empty packet, f8 01, f8 02 and the three follow-up header packets 20 1D / 30 03 / 40 01
         self.assertEqual(len(slot["unknown"]), 6)
 
 

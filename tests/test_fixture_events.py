@@ -1,8 +1,8 @@
-"""Tests gegen den Mitschnitt vom 2026-11-05 mit LED-Befehlen, Tasten, Neubinden und Ausschalten.
+"""Tests against the capture of 2026-11-05 with LED commands, buttons, re-binding and turning off.
 
-Ablauf (Sekunden seit Beginn): Leerlauf; LED-Befehl 10 bei 114,3 s und 2 bei 132,4 s; A, B, Guide
-kurz bei 137,7 / 139,2 / 140,2 s; xpad lösen bei 201,7 s und binden bei 213,3 s; Guide halten
-von 223,8 s bis 228,9 s; Controller wieder einschalten bei 241,3 s. Vollständig, nicht abgeschnitten.
+Sequence (seconds since the start): idle; LED command 10 at 114.3 s and 2 at 132.4 s; A, B, Guide
+tapped at 137.7 / 139.2 / 140.2 s; xpad unbound at 201.7 s and bound at 213.3 s; Guide held
+from 223.8 s to 228.9 s; controller switched back on at 241.3 s. Complete, not cut off.
 """
 
 import sys
@@ -53,8 +53,8 @@ class EventCaptureTests(unittest.TestCase):
         expected = [
             (114.3, build_led(10)),
             (132.4, build_led(2)),
-            (201.7, build_led(0)),          # xpad beim Lösen
-            (213.3, build_status_request()),  # xpad beim Binden: Anwesenheitsabfrage
+            (201.7, build_led(0)),          # xpad when unbinding
+            (213.3, build_status_request()),  # xpad when binding: presence request
             (213.3, build_led(2)),
             (228.9, build_poweroff()),
             (228.9, build_led(0)),
@@ -62,7 +62,7 @@ class EventCaptureTests(unittest.TestCase):
         ]
         got = [(round(t, 1), r.data) for t, r in self.out]
         self.assertEqual(got, expected)
-        self.assertEqual({r.endpoint for _, r in self.out}, {1})  # LED xpad0 gehört zu Slot 1 (Endpunkt 1)
+        self.assertEqual({r.endpoint for _, r in self.out}, {1})  # LED xpad0 belongs to slot 1 (endpoint 1)
 
     def test_led_and_buttons_trigger_no_state(self):
         start, end = 114.0, 141.0

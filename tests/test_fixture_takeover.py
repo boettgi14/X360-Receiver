@@ -1,9 +1,9 @@
-"""Tests gegen den Mitschnitt vom 2026-11-05 mit tools/probe_takeover.py (Phase 0d).
+"""Tests against the capture of 2026-11-05 made with tools/probe_takeover.py (phase 0d).
 
-Ablauf (Sekunden seit Beginn, Controller in Slot 1 an): Anwesenheitsabfrage bei 41,3 s,
-Akkuanfrage bei 64,0 s, Ausschalten bei 85,4 s, danach schaltet der Nutzer den Controller bei
-ca. 105,4 s von Hand wieder ein. Jedes Mal löst xpad die Schnittstelle (URB-Status -108) und
-bindet sie nach etwa 2 s wieder (eigene Anwesenheitsabfrage plus LED-Befehl).
+Sequence (seconds since the start, controller in slot 1 on): presence request at 41.3 s,
+battery request at 64.0 s, turn-off at 85.4 s, after which the user switches the controller back
+on by hand at about 105.4 s. Each time xpad releases the interface (URB status -108) and
+binds it again after about 2 s (its own presence request plus LED command).
 """
 
 import sys
@@ -90,7 +90,7 @@ class TakeoverCaptureTests(unittest.TestCase):
         self.assertIsInstance(later[2][1], LinkReport)
         self.assertIsInstance(later[3][1], StateReport)
         self.assertEqual(later[3][1].power_state, 2)
-        # xpad (wieder gebunden) setzt direkt danach die Spieler-LED
+        # xpad (bound again) sets the player LED right after
         reconnect = poweroff + 20.0
         self.assertEqual([d for t, d in self.out if reconnect - 0.05 <= t <= reconnect + 0.05], [build_led(2)])
 
@@ -112,7 +112,7 @@ class TakeoverCaptureTests(unittest.TestCase):
         self.assertTrue(final["connected"])
         self.assertEqual(final["power_state_raw"], 2)
         self.assertEqual(final["state_source"], "report")
-        self.assertIsNotNone(final["last_poweroff_age_s"])  # Monitor sieht auch den Befehl des Werkzeugs
+        self.assertIsNotNone(final["last_poweroff_age_s"])  # the monitor also sees the tool's command
         self.assertEqual(final["last_led_mode"], 2)
 
 

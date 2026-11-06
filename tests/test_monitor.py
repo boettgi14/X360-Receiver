@@ -1,4 +1,4 @@
-"""Tests für ReceiverMonitor, UsbmonReader, MonitorService und controls."""
+"""Tests for ReceiverMonitor, UsbmonReader, MonitorService and controls."""
 
 import sys
 import tempfile
@@ -81,15 +81,15 @@ class MonitorFixtureTests(unittest.TestCase):
         m = ReceiverMonitor()
         m.set_watched([(1, 2)])
         replay(m, LINES)
-        m.feed(parse_usbmon_line(line("i", 1, "0800")), 2000.0)  # getrennt
+        m.feed(parse_usbmon_line(line("i", 1, "0800")), 2000.0)  # disconnected
         s = m.snapshot(2000.0)[0]["slots"][0]
         self.assertFalse(s["connected"])
-        m.feed(parse_usbmon_line(line("i", 1, "0880")), 2001.0)  # verbunden
+        m.feed(parse_usbmon_line(line("i", 1, "0880")), 2001.0)  # connected
         s = m.snapshot(2001.0)[0]["slots"][0]
         self.assertTrue(s["connected"])
         self.assertIsNone(s["battery_level"])
         self.assertEqual(s["input_count"], 0)
-        self.assertEqual(s["last_led_mode"], 2)  # Historie bleibt
+        self.assertEqual(s["last_led_mode"], 2)  # history stays
 
 
 class MonitorSyntheticTests(unittest.TestCase):
@@ -107,7 +107,7 @@ class MonitorSyntheticTests(unittest.TestCase):
         self.assertFalse(any(s["connected"] for s in self.m.snapshot(1.0)[0]["slots"]))
 
     def test_inferred_connection_from_input(self):
-        pkt = "0001" + "00" * 27  # ID 0x00, Typ 0x01, Eingabepaket (29 Bytes)
+        pkt = "0001" + "00" * 27  # ID 0x00, type 0x01, input packet (29 bytes)
         self.m.feed(parse_usbmon_line(line("i", 1, pkt)), 5.0)
         s = self.m.snapshot(6.0)[0]["slots"][0]
         self.assertTrue(s["connected"])
@@ -165,7 +165,7 @@ class ReaderServiceTests(unittest.TestCase):
             (Path(tmp) / "1u").write_text("\n".join(LINES) + "\n", encoding="ascii")
             service = MonitorService(find=lambda: [info], usbmon_template=str(Path(tmp) / "{bus}u"))
             service.refresh()
-            self.assertEqual(service.status()["readers"], {})  # aus: nichts gelesen
+            self.assertEqual(service.status()["readers"], {})  # off: nothing read
             service.enable()
             deadline = time.time() + 5
             while time.time() < deadline:
@@ -200,23 +200,25 @@ class EnsureUsbmonTests(unittest.TestCase):
             return types.SimpleNamespace(returncode=0, stderr="")
 
         def fail(cmd, **kw):
-            return types.SimpleNamespace(returncode=1, stderr="Modul nicht gefunden")
+            return types.SimpleNamespace(returncode=1, stderr="Module not found")
 
         def boom(cmd, **kw):
             raise FileNotFoundError("modprobe")
 
         template = "/nonexistent/{bus}u"
         self.assertIsNone(ensure_usbmon(template, runner=ok))
-        self.assertEqual(calls, [["modprobe", "usbmon"]])
-        self.assertIn("fehlgeschlagen", ensure_usbmon(template, runner=fail))
-        self.assertIn("nicht ausführbar", ensure_usbmon(template, runner=boom))
+        # `run_fixed` resolves the program to an absolute path where one exists (e.g. /usr/sbin/modprobe)
+        self.assertEqual([(Path(call[0]).name, call[1:]) for call in calls], [("modprobe", ["usbmon"])])
+        self.assertIn("failed", ensure_usbmon(template, runner=fail))
+        self.assertIn("Module not found", ensure_usbmon(template, runner=fail))
+        self.assertIn("could not be run", ensure_usbmon(template, runner=boom))
 
     def test_service_enable_records_setup_error(self):
         service = MonitorService(find=lambda: [], usbmon_template="/nonexistent/{bus}u",
-                                 ensure=lambda template: "kaputt")
+                                 ensure=lambda template: "broken")
         service.enable()
         try:
-            self.assertEqual(service.status()["setup_error"], "kaputt")
+            self.assertEqual(service.status()["setup_error"], "broken")
         finally:
             service.disable()
 
@@ -241,6 +243,10 @@ class ControlsTests(unittest.TestCase):
                     controls.set_led_mode("xpad0", bad, base)
             with self.assertRaises(FileNotFoundError):
                 controls.set_led_mode("xpad1", 1, base)
+
+    def test_led_mode_descriptions_are_complete_and_language_neutral(self):
+        self.assertEqual(sorted(controls.LED_MODES), list(range(16)))
+        self.assertTrue(all(text.isascii() and text for text in controls.LED_MODES.values()))
 
     def test_default_mode_cycles(self):
         self.assertEqual([controls.default_led_mode(f"xpad{n}") for n in (0, 1, 3, 4)], [2, 3, 5, 2])

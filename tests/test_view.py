@@ -1,4 +1,4 @@
-"""Tests für die Receiver-Ansicht (x360w.view), LED-Zuordnung und die sysfs-Anwesenheit."""
+"""Tests for the receiver view (x360w.view), LED assignment and sysfs presence."""
 
 import os
 import sys
@@ -26,7 +26,7 @@ def monitor_entry(bus, devnum, connected_slots):
 
 
 class Env:
-    """Zwei Receiver im nachgebauten sysfs-Baum."""
+    """Two receivers in the reconstructed sysfs tree."""
 
     def __init__(self, tmp):
         self.root = Path(tmp)
@@ -52,14 +52,14 @@ class SysfsPresenceTests(unittest.TestCase):
             env = Env(tmp)
             env.add_input("1-2", 0)
             env.add_input("1-2", 2)
-            (env.root / "1-2:1.2" / "input").mkdir(parents=True, exist_ok=True)  # leerer Ordner zählt nicht
+            (env.root / "1-2:1.2" / "input").mkdir(parents=True, exist_ok=True)  # an empty folder does not count
             self.assertEqual(connected_slots_sysfs(env.receivers[0], env.root), {0, 2})
             self.assertEqual(connected_slots_sysfs(env.receivers[1], env.root), set())
 
     def test_audio_interfaces_are_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = Env(tmp)
-            (env.root / "1-2:1.1" / "input" / "input7").mkdir(parents=True)  # Audio-Schnittstelle
+            (env.root / "1-2:1.1" / "input" / "input7").mkdir(parents=True)  # audio interface
             self.assertEqual(connected_slots_sysfs(env.receivers[0], env.root), set())
 
 
@@ -78,8 +78,8 @@ class LedOwnerTests(unittest.TestCase):
             (base / "input3::capslock").mkdir()
             self.assertIsNone(controls.led_owner("input3::capslock", base))
             self.assertIsNone(controls.led_owner("../x", base))
-            self.assertIsNone(controls.led_owner("xpad9", base))  # existiert nicht
-            (base / "xpad5").mkdir()  # kein Symlink nach .../leds/xpad5
+            self.assertIsNone(controls.led_owner("xpad9", base))  # does not exist
+            (base / "xpad5").mkdir()  # not a symlink to .../leds/xpad5
             self.assertIsNone(controls.led_owner("xpad5", base))
 
 
@@ -99,7 +99,7 @@ class ViewTests(unittest.TestCase):
             views = self.build(env, [monitor_entry(1, 4, {0, 1})], sysfs={"1-2": {1, 3}})
         slots = {c["slot"]: c["detected_by"] for c in views[0]["controllers"]}
         self.assertEqual(slots, {0: ["monitor"], 1: ["monitor", "sysfs"], 3: ["sysfs"]})
-        self.assertEqual(views[1]["controllers"], [])  # anderer Receiver unberührt
+        self.assertEqual(views[1]["controllers"], [])  # other receiver untouched
 
     def test_controller_dict_has_monitor_fields_even_without_monitor(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -111,7 +111,7 @@ class ViewTests(unittest.TestCase):
         self.assertIn("state_age_s", c)
 
     def test_leds_follow_controller_order(self):
-        # xpad0 = Controller 1, xpad1 = Controller 2 usw. (nach Slot-Reihenfolge)
+        # xpad0 = controller 1, xpad1 = controller 2 etc. (in slot order)
         with tempfile.TemporaryDirectory() as tmp:
             env = Env(tmp)
             one = self.build(env, sysfs={"1-2": {0}}, owners={"1-2": ["xpad0"]})
@@ -126,7 +126,7 @@ class ViewTests(unittest.TestCase):
     def test_led_order_is_numeric_not_alphabetic(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = Env(tmp)
-            names = ["xpad10", "xpad9"]  # alphabetisch wäre xpad10 vor xpad9
+            names = ["xpad10", "xpad9"]  # alphabetically xpad10 would come before xpad9
             views = self.build(env, sysfs={"1-2": {0, 1}}, owners={"1-2": names})
         self.assertEqual([c["led"] for c in views[0]["controllers"]], ["xpad9", "xpad10"])
 
@@ -204,7 +204,7 @@ class ConnectedTargetsTests(unittest.TestCase):
             env = Env(tmp)
             views = view.build_receiver_views(env.receivers, [], {"3-1": ["xpad0"]}, {"1-2": {1, 3}})
             targets = view.connected_targets(views)
-        # Receiver 2 hat nur eine LED, aber keine erkannten Slots: wird hier NICHT geraten
+        # Receiver 2 has only a LED but no detected slots: NOT guessed here
         self.assertEqual(targets, [(1, 4, 1), (1, 4, 3)])
 
 

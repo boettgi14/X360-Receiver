@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# Phase 0: Nur lesend. Sammelt Informationen über Receiver, xpad, LEDs, Akku-Schnittstellen
-# und usbmon-Verfügbarkeit. Ändert nichts am System.
+# Phase 0: Read-only. Collects information about the receiver, xpad, LEDs, battery interfaces
+# and usbmon availability. Changes nothing on the system.
 #
-# Aufruf (Desktop-Modus, Terminal):  bash tools/discover.sh | tee discover.txt
+# Usage (desktop mode, terminal):  bash tools/discover.sh | tee discover.txt
+#
+# LC_ALL=C: the output of the tools used below does not depend on the system language, so a German
+# and an English system give comparable results.
 
 set -u
+export LC_ALL=C
 
 section() { printf '\n===== %s =====\n' "$1"; }
 
-section "Kernel / Distribution"
+section "Kernel / distribution"
 uname -r
 grep -E '^(NAME|VARIANT_ID|VERSION)=' /etc/os-release 2>/dev/null
 
-section "Xbox 360 Wireless Receiver am USB-Bus (VID 045e)"
-lsusb 2>/dev/null | grep -i '045e' || echo "kein Microsoft-USB-Gerät gefunden oder lsusb fehlt"
+section "Xbox 360 Wireless receiver on the USB bus (VID 045e)"
+lsusb 2>/dev/null | grep -i '045e' || echo "no Microsoft USB device found or lsusb is missing"
 for dev in /sys/bus/usb/devices/*; do
   [ -f "$dev/idVendor" ] || continue
   vid=$(cat "$dev/idVendor"); pid=$(cat "$dev/idProduct")
@@ -31,38 +35,38 @@ for dev in /sys/bus/usb/devices/*; do
           "$(cat "$intf/bInterfaceClass" 2>/dev/null)" \
           "$(cat "$intf/bInterfaceSubClass" 2>/dev/null)" \
           "$(cat "$intf/bInterfaceProtocol" 2>/dev/null)" \
-          "${drv:-<keiner>}"
+          "${drv:-<none>}"
       done
       ;;
   esac
 done
 
-section "xpad-Modul und Parameter"
-lsmod | grep -E '^xpad' || echo "xpad nicht als Modul geladen (evtl. fest im Kernel)"
+section "xpad module and parameters"
+lsmod | grep -E '^xpad' || echo "xpad not loaded as a module (possibly built into the kernel)"
 for p in /sys/module/xpad/parameters/*; do
   [ -f "$p" ] && printf '%s = %s\n' "$(basename "$p")" "$(cat "$p")"
 done
 
-section "LED-Klasse (xpadN)"
-ls -l /sys/class/leds 2>/dev/null | grep -i xpad || echo "keine xpad-LEDs"
+section "LED class (xpadN)"
+ls -l /sys/class/leds 2>/dev/null | grep -i xpad || echo "no xpad LEDs"
 
-section "Eingabegeräte"
-grep -B1 -A6 -i 'xbox' /proc/bus/input/devices 2>/dev/null || echo "keine Xbox-Eingabegeräte"
+section "Input devices"
+grep -B1 -A6 -i 'xbox' /proc/bus/input/devices 2>/dev/null || echo "no Xbox input devices"
 
-section "Akku-Schnittstellen (power_supply)"
-ls /sys/class/power_supply 2>/dev/null || echo "leer"
-command -v upower >/dev/null && upower -d | grep -i -B2 -A8 -E 'xbox|xpad|gaming|controller' || echo "upower: nichts Controller-Bezogenes"
+section "Battery interfaces (power_supply)"
+ls /sys/class/power_supply 2>/dev/null || echo "empty"
+command -v upower >/dev/null && upower -d | grep -i -B2 -A8 -E 'xbox|xpad|gaming|controller' || echo "upower: nothing controller-related"
 
-section "usbmon-Verfügbarkeit"
-lsmod | grep -E '^usbmon' || echo "usbmon nicht geladen"
-ls /dev/usbmon* 2>/dev/null || echo "keine /dev/usbmon*-Knoten"
-mount | grep -E 'debugfs' || echo "debugfs nicht gemountet"
-ls /sys/kernel/debug/usb/usbmon 2>/dev/null || echo "kein debugfs-usbmon (evtl. kein Root oder nicht geladen)"
-grep -E '^CONFIG_USB_MON' "/boot/config-$(uname -r)" 2>/dev/null || zcat /proc/config.gz 2>/dev/null | grep -E '^CONFIG_USB_MON' || echo "Kernel-Konfiguration nicht auslesbar"
-cat /sys/kernel/security/lockdown 2>/dev/null || echo "kein Lockdown-Status"
+section "usbmon availability"
+lsmod | grep -E '^usbmon' || echo "usbmon not loaded"
+ls /dev/usbmon* 2>/dev/null || echo "no /dev/usbmon* nodes"
+mount | grep -E 'debugfs' || echo "debugfs not mounted"
+ls /sys/kernel/debug/usb/usbmon 2>/dev/null || echo "no debugfs usbmon (possibly not root or not loaded)"
+grep -E '^CONFIG_USB_MON' "/boot/config-$(uname -r)" 2>/dev/null || zcat /proc/config.gz 2>/dev/null | grep -E '^CONFIG_USB_MON' || echo "kernel configuration cannot be read"
+cat /sys/kernel/security/lockdown 2>/dev/null || echo "no lockdown status"
 
 section "SELinux"
-getenforce 2>/dev/null || echo "getenforce nicht verfügbar"
+getenforce 2>/dev/null || echo "getenforce not available"
 
-section "Fertig"
-echo "Ergebnis bitte vollständig weitergeben. Das Skript hat nichts verändert."
+section "Done"
+echo "Please pass on the complete result. The script has changed nothing."
