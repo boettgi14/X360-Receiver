@@ -53,6 +53,7 @@ REFRESH_INTERVAL_S = 5.0
 STARTUP_QUERY_DELAY_S = 1.0  # short pause after start so Decky can finish loading
 QUERY_BUSY_RETRIES = 5
 QUERY_BUSY_WAIT_S = 0.5
+SHUTDOWN_STEP_TIMEOUT_S = 2.0  # per slow step while unloading/uninstalling; Decky kills the plugin after 5 s in total
 MAX_NOTICES = 16  # pending low-battery notices; older ones are dropped
 LANGUAGE_RE = re.compile(r"auto|[a-z]{2}(-[A-Za-z]{2,4})?")
 PACKAGE_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "py_modules" / "x360w"
@@ -132,6 +133,7 @@ class Plugin:
         self.unit_error = None
         self._unit_lock = asyncio.Lock()  # one change of the service at a time (start reconciliation vs. toggle)
         self.low_battery = LowBatteryWatcher()
+        self._led_modes_set = {}  # LED name -> mode set through the plugin
         self._notices = []
         self._notices_lock = threading.Lock()
         settings = self._load_settings()
@@ -234,53 +236,81 @@ class Plugin:
                 self._notices.extend({"slot": n["slot"], "level": n["level"]} for n in notices)
                 del self._notices[:-MAX_NOTICES]
 
+    async def _run_bounded(self, name: str, function, timeout_s: float) -> bool:
+        """Runs `function` in a plain daemon thread and waits at most `timeout_s` for it. Never raises.
+
+        Used while the plugin is shutting down. `asyncio.to_thread` needs the event loop's default executor,
+        and on the device `_unload` never finished (Decky killed the plugin after 5 s, every time, also on
+        a plain reload; the log line "x360w unloaded" never appeared). Whether the executor is the cause is
+        not proven; a bare thread and a deadline cannot hang on it. Every step is logged with its time.
+        """
+        started = time.monotonic()
+        outcome: dict = {}
+
+        def work() -> None:
+            try:
+                outcome["result"] = function()
+            except BaseException as exc:  # noqa: BLE001 - must be reported, not lost in the thread
+                outcome["error"] = exc
+
+        thread = threading.Thread(target=work, name=f"x360w-{name}", daemon=True)
+        thread.start()
+        while thread.is_alive() and time.monotonic() - started < timeout_s:
+            await asyncio.sleep(0.02)
+        took = time.monotonic() - started
+        if thread.is_alive():
+            _log("warning", f"{name}: still running after {took:.1f} s, not waiting any longer")
+            return False
+        if "error" in outcome:
+            _log("error", f"{name}: failed after {took:.2f} s: {outcome['error']!r}")
+            return False
+        _log("info", f"{name}: done in {took:.2f} s")
+        return True
+
     async def _unload(self):
+        _log("info", "x360w unloading")
         for task in (self.refresh_task, self.startup_task, self.unit_task):
             if task is not None:
                 task.cancel()
-        await asyncio.to_thread(self.service.disable)
+        _log("info", "x360w: background tasks cancelled")
+        await self._run_bounded("stop monitor", self.service.disable, SHUTDOWN_STEP_TIMEOUT_S)
         _log("info", "x360w unloaded")
 
     async def _uninstall(self):
         """Called by Decky after `_unload` on removal (also when reinstalling from a ZIP).
 
-        Restores auto_poweroff, removes the systemd service and deletes the plugin's own folders under
-        DECKY_HOME. Decky deletes the plugin folder itself afterwards. Not undone: the loaded kernel
-        module usbmon (until reboot) and LED modes (until the controller connects the next time).
+        Restores auto_poweroff, deletes the plugin's own folders under DECKY_HOME and removes the systemd
+        service. Decky deletes the plugin folder itself afterwards. Not undone: the loaded kernel module
+        usbmon (until reboot) and LED modes (until the controller connects the next time).
 
-        Decky kills a plugin that needs more than about 5 s to shut down (observed on the device), and
-        removing the service runs `systemctl`, which can take a few seconds. So the folders are deleted
-        at the same time as the service, not after it. Every refusal is logged with its reason.
+        Decky kills a plugin that needs more than about 5 s to shut down (observed on the device), so the
+        quick steps come first: restoring the parameter and deleting the folders (plain calls, no thread,
+        a few milliseconds), then the service removal, which runs `systemctl` and can take seconds. Every
+        step and every refusal is logged with its reason.
         """
+        _log("info", "x360w is being removed")
         try:
             original = self._load_settings().get("original_auto_poweroff")
             if cleanup.restore_auto_poweroff(original):
                 _log("info", "auto_poweroff reset to its original value")
         except (OSError, ValueError) as exc:
             _log("error", f"auto_poweroff not reset: {exc!r}")
-        _log("info", "x360w is being removed")
 
-        async def remove_service() -> None:
+        home = getattr(decky, "DECKY_HOME", None)
+        for attr in ("DECKY_PLUGIN_SETTINGS_DIR", "DECKY_PLUGIN_RUNTIME_DIR", "DECKY_PLUGIN_LOG_DIR"):
+            path = getattr(decky, attr, None)
+            reason = cleanup.refusal_reason(path, home)
+            if reason is not None:
+                _log("warning", f"{attr} not deleted: {reason}")
+                continue
             try:
-                result = await asyncio.to_thread(poweroff_unit.uninstall)  # even if the option is off: leave no remnant behind
-                _log("info", f"Service removed: {result}")
-            except Exception as exc:  # must not keep the folders from being removed
-                _log("error", f"Service not removed: {exc!r}")
+                cleanup.remove_plugin_dir(path, home)
+                _log("info", f"{attr} deleted")
+            except OSError as exc:
+                _log("error", f"{attr} not deleted: {exc!r}")
 
-        async def remove_folders() -> None:
-            home = getattr(decky, "DECKY_HOME", None)
-            for attr in ("DECKY_PLUGIN_SETTINGS_DIR", "DECKY_PLUGIN_RUNTIME_DIR", "DECKY_PLUGIN_LOG_DIR"):
-                path = getattr(decky, attr, None)
-                reason = cleanup.refusal_reason(path, home)
-                if reason is not None:
-                    _log("warning", f"{attr} not deleted: {reason}")
-                    continue
-                try:
-                    await asyncio.to_thread(cleanup.remove_plugin_dir, path, home)
-                except OSError as exc:
-                    _log("error", f"{attr} not deleted: {exc!r}")
-
-        await asyncio.gather(remove_service(), remove_folders())
+        # even if the option is off: leave no remnant behind
+        await self._run_bounded("remove service", poweroff_unit.uninstall, SHUTDOWN_STEP_TIMEOUT_S)
 
     # -- Queries ------------------------------------------------------------
 
@@ -288,15 +318,25 @@ class Plugin:
         return [r.to_dict() for r in await asyncio.to_thread(self.service.refresh)]
 
     def _views(self, receivers) -> list:
+        owners = controls.led_owners()
+        present = {name for names in owners.values() for name in names}
+        for name in list(self._led_modes_set):
+            if name not in present:  # the LED is gone, so the controller left; xpad resets it on the next connect
+                del self._led_modes_set[name]
         views = view.build_receiver_views(
             receivers,
             self.service.snapshot(),
-            controls.led_owners(),
+            owners,
             {r.usb_path: discovery.connected_slots_sysfs(r) for r in receivers},
             self.batteries.snapshot(),
+            self._led_modes_set,
         )
         self.batteries.prune(view.connected_targets(views))
         return views
+
+    def _remember_led_mode(self, name: str, mode: int) -> None:
+        """Remembers a mode set through the plugin; xpad resets the LED when the controller reconnects."""
+        self._led_modes_set[name] = mode
 
     def _all_targets(self) -> list:
         return view.plan_targets(self._views(self.service.refresh()))
@@ -401,6 +441,7 @@ class Plugin:
             return _error(str(exc), error_codes.LED_MISSING)
         except (ValueError, OSError) as exc:
             return _error(str(exc))
+        self._remember_led_mode(name, mode)
         return {"ok": True}
 
     async def reset_led(self, name: str) -> dict:
@@ -410,6 +451,7 @@ class Plugin:
             return _error(str(exc), error_codes.LED_MISSING)
         except (ValueError, OSError) as exc:
             return _error(str(exc))
+        self._remember_led_mode(name, controls.default_led_mode(name))
         return {"ok": True}
 
     async def set_auto_poweroff(self, enabled: bool) -> dict:
@@ -504,29 +546,14 @@ class Plugin:
             path = rumble.device_path(nodes[0])
         except ValueError as exc:  # cannot happen for names from discovery, but the path is checked anyway
             return _error(str(exc))
-        blinked = self._blink_led(receivers, bus, devnum, slot)
         try:
             rumble.play(path)
         except rumble.RumbleError as exc:
             return _error(str(exc), exc.code, exc.detail)
-        return {"ok": True, "led": blinked}
-
-    def _blink_led(self, receivers, bus: int, devnum: int, slot: int) -> bool:
-        """Blinks the controller's LED once (mode 15, then back to the previous state), if it is known."""
-        for receiver_view in self._views(receivers):
-            if receiver_view.get("bus") != bus or receiver_view.get("devnum") != devnum:
-                continue
-            for controller in receiver_view["controllers"]:
-                if controller["slot"] == slot and controller.get("led"):
-                    try:
-                        controls.set_led_mode(controller["led"], 15)
-                    except (ValueError, OSError):
-                        return False
-                    return True
-        return False
+        return {"ok": True}
 
     async def find_controller(self, bus: int, devnum: int, slot: int) -> dict:
-        """Identifies a controller: vibrates it for about a second and blinks its LED once (slot 0..3)."""
+        """Identifies a controller by vibrating it for a few seconds (slot 0..3). The LED is left alone."""
         error = await self._slot_target_error(bus, devnum, slot)
         if error:
             return error

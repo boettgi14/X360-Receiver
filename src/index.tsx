@@ -204,10 +204,15 @@ function Chevron({ open }: { open: boolean }) {
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
-    <Field label={label} bottomSeparator="none" padding="compact" childrenLayout="inline">
+    <Field label={label} focusable bottomSeparator="none" padding="compact" childrenLayout="inline">
       <span style={{ opacity: 0.85 }}>{value}</span>
     </Field>
   );
+}
+
+/** Shows a notification toast. Used for low-battery notices and for the test button. */
+function showToast(t: Messages, body: string) {
+  toaster.toast({ title: t.lowBatteryTitle, body, icon: <FaGamepad /> });
 }
 
 function describeController(t: Messages, c: Controller): string {
@@ -534,6 +539,15 @@ function Content() {
               }}
             />
           </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              description={t.testNotificationHint}
+              onClick={() => showToast(t, t.testNotificationBody)}
+            >
+              {t.testNotification}
+            </ButtonItem>
+          </PanelSectionRow>
           {status.monitor.setup_error && (
             <PanelSectionRow>
               <Field label={t.monitorCannotStart} description={status.monitor.setup_error} bottomSeparator="none" />
@@ -618,9 +632,17 @@ function Content() {
             {open["diagnostics"] === true &&
               status.diagnostics.lines.map((line, i) => (
                 <PanelSectionRow key={i}>
-                  <div style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                    {`${(t.diagnosticLines as Record<string, string | undefined>)[line.key] ?? line.key}: ${line.value}`}
-                  </div>
+                  <Field
+                    label={(t.diagnosticLines as Record<string, string | undefined>)[line.key] ?? line.key}
+                    focusable
+                    bottomSeparator="none"
+                    padding="compact"
+                    childrenLayout="below"
+                  >
+                    <div style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                      {line.value}
+                    </div>
+                  </Field>
                 </PanelSectionRow>
               ))}
           </Group>
@@ -648,11 +670,7 @@ export default definePlugin(() => {
       if (!Array.isArray(notices)) return;
       for (const notice of notices) {
         const t = MESSAGES[resolveLanguage(notice.language, detectLanguage())];
-        toaster.toast({
-          title: t.lowBatteryTitle,
-          body: t.lowBatteryBody(notice.slot + 1, notice.level),
-          icon: <FaGamepad />,
-        });
+        showToast(t, t.lowBatteryBody(notice.slot + 1, notice.level));
       }
     } catch {
       // The backend may not be ready yet; the next poll tries again.

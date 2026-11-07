@@ -32,25 +32,26 @@ const en = {
   // ---- language setting
   groupLanguage: "Language",
   languageSetting: "Language",
-  languageHint: "Automatic follows the Steam language.",
+  languageHint: "Automatic follows Steam.",
   languageAuto: "Automatic (Steam language)",
   languageEnglish: "English",
   languageGerman: "Deutsch",
 
   // ---- battery options and the low-battery notification
   startupQueryToggle: "Query battery at start",
-  startupQueryHint:
-    "When the plugin starts, each connected controller is queried once and disappears for about 3 seconds. Without this, a controller that was already connected shows no battery level until you query it.",
+  startupQueryHint: "Queries connected controllers once at start. Each disappears for about 3 s.",
   lowBatteryToggle: "Warn when battery is low",
-  lowBatteryHint:
-    "Shows a notification when a controller reports battery level 0 or 1 of 3. The receiver only reports the level when a controller connects or when it is queried, so the warning appears at those moments. Assumes that 0 means empty and 1 means low (not verified on a device).",
+  lowBatteryHint: "Notice at battery level 0 or 1. Appears when a controller connects or is queried.",
   lowBatteryTitle: "Controller battery low",
   lowBatteryBody: (n: number, level: number) => `Controller ${n}: battery level ${level}/3`,
+  testNotification: "Send test notification",
+  testNotificationHint: "Shows a sample notice.",
+  testNotificationBody: "Controller 1: battery level 1/3 (test)",
 
   // ---- find controller
   groupIdentify: "Identify",
   findController: "Find controller",
-  findControllerHint: "Vibrates the controller for about a second and blinks its LED once.",
+  findControllerHint: "Vibrates the controller for a few seconds.",
   foundController: (n: number) => `Controller ${n}: vibration sent`,
 
   // ---- ages and levels
@@ -121,20 +122,18 @@ const en = {
   general: "General",
   groupMonitoring: "Monitoring",
   monitorToggle: "Live USB monitoring",
-  monitorToggleHint:
-    "Follows the receivers' USB traffic (usbmon) to see connections and battery reports the moment they happen. Without it, controllers are still listed (found through the system) and show the battery level of the last query: at plugin start or with “Query battery now”. Only status and counters are kept, never button presses.",
+  monitorToggleHint: "Follows USB traffic live. Without it, controllers still show their last queried battery level.",
   monitorCannotStart: "Monitor cannot start",
   busN: (bus: string) => `Bus ${bus}`,
   groupPower: "Power",
   standbyUnavailable: "Turn-off on standby unavailable",
-  standbyUnavailableHint: "The kernel parameter xpad.auto_poweroff cannot be read (is the xpad driver loaded?).",
+  standbyUnavailableHint: "xpad.auto_poweroff cannot be read.",
   standbyToggle: "Turn off on standby",
-  standbyHint: "All controllers turn off when the device goes to standby. Applies to all receivers.",
+  standbyHint: "Controllers turn off when the device goes to standby.",
   shutdownToggle: "Turn off on shutdown",
-  shutdownHint:
-    "All controllers turn off when the device shuts down or restarts. Applies to all receivers. Sets up a small system service for this, which is deleted again when the option is switched off and when the plugin is removed.",
+  shutdownHint: "Controllers turn off on shutdown and restart. Sets up a small system service.",
   turnOffAllNow: "Turn off all controllers now",
-  turnOffAllNowHint: "Same procedure as on shutdown, for trying it out.",
+  turnOffAllNowHint: "Same as on shutdown.",
 
   // ---- receivers
   receiverTitle: "Receiver",
@@ -147,11 +146,10 @@ const en = {
   noControllerConnected: "No controller connected",
   moreControllers: (n: number) => `${n} more ${n === 1 ? "controller" : "controllers"} connected`,
   moreControllersHint: (monitorLabel: string) =>
-    `The slot was not detected. Turn on “${monitorLabel}” (above) to show it here.`,
+    `Slot unknown. “${monitorLabel}” shows it.`,
   groupReceiverLeds: "LEDs of this receiver",
   ledUnassigned: "Cannot assign",
-  ledUnassignedHint:
-    "The number of LEDs does not match the number of detected controllers (xpad0 is controller 1, xpad1 is controller 2, and so on).",
+  ledUnassignedHint: "The number of LEDs does not match the number of controllers.",
 
   // ---- controller card
   groupBattery: "Battery",
@@ -160,10 +158,10 @@ const en = {
   lastReport: "Last report",
   notReportedYet: "not reported yet",
   freshnessMonitorOff: (queryLabel: string) =>
-    `Monitoring is off. The battery level is determined when the plugin starts and with “${queryLabel}”, not continuously.`,
-  freshnessFromLink: "From the connection message; how fresh the value is, is unclear.",
+    `Read at plugin start and with “${queryLabel}”.`,
+  freshnessFromLink: "From the connection message; freshness unclear.",
   queryBattery: "Query battery now",
-  queryBatteryHint: "The controller disappears for about 3 seconds. Do not use during a game.",
+  queryBatteryHint: "The controller disappears for about 3 s. Not during a game.",
   turnOffController: "Turn off controller",
   detailSlot: "Slot on receiver",
   detailType: "Type",
@@ -226,23 +224,24 @@ const de: Messages = {
 
   groupLanguage: "Sprache",
   languageSetting: "Sprache",
-  languageHint: "Automatisch folgt der Steam-Sprache.",
+  languageHint: "Automatisch folgt Steam.",
   languageAuto: "Automatisch (Steam-Sprache)",
   languageEnglish: "English",
   languageGerman: "Deutsch",
 
   startupQueryToggle: "Akku beim Start abfragen",
-  startupQueryHint:
-    "Beim Start des Plugins wird jeder verbundene Controller einmal abgefragt und verschwindet dabei für etwa 3 Sekunden. Ohne das zeigt ein schon verbundener Controller keinen Akkustand, bis du ihn abfragst.",
+  startupQueryHint: "Fragt verbundene Controller beim Start einmal ab. Jeder verschwindet dabei ca. 3 s.",
   lowBatteryToggle: "Bei niedrigem Akku warnen",
-  lowBatteryHint:
-    "Zeigt eine Benachrichtigung, wenn ein Controller Akkustufe 0 oder 1 von 3 meldet. Der Receiver meldet die Stufe nur beim Verbinden eines Controllers oder bei einer Abfrage, die Warnung erscheint daher zu diesen Zeitpunkten. Annahme: 0 heißt leer, 1 niedrig (am Gerät nicht geprüft).",
+  lowBatteryHint: "Meldung bei Akkustufe 0 oder 1. Erscheint beim Verbinden oder Abfragen eines Controllers.",
   lowBatteryTitle: "Controller-Akku niedrig",
   lowBatteryBody: (n, level) => `Controller ${n}: Akkustufe ${level}/3`,
+  testNotification: "Testbenachrichtigung senden",
+  testNotificationHint: "Zeigt eine Beispielmeldung.",
+  testNotificationBody: "Controller 1: Akkustufe 1/3 (Test)",
 
   groupIdentify: "Erkennen",
   findController: "Controller finden",
-  findControllerHint: "Lässt den Controller etwa eine Sekunde vibrieren und seine LED einmal blinken.",
+  findControllerHint: "Lässt den Controller einige Sekunden vibrieren.",
   foundController: (n) => `Controller ${n}: Vibration gesendet`,
 
   ageSeconds: (n) => `vor ${n} s`,
@@ -307,20 +306,18 @@ const de: Messages = {
   general: "Allgemein",
   groupMonitoring: "Überwachung",
   monitorToggle: "Live-Überwachung per USB",
-  monitorToggleHint:
-    "Verfolgt den USB-Verkehr der Receiver (usbmon), um Verbindungen und Akkumeldungen im Moment ihres Auftretens zu sehen. Ohne das werden Controller trotzdem angezeigt (über das System erkannt) und zeigen den Akkustand der letzten Abfrage: beim Start des Plugins oder mit „Akku jetzt abfragen“. Gespeichert werden nur Status und Zähler, nie Tastendrücke.",
+  monitorToggleHint: "Verfolgt den USB-Verkehr live. Ohne zeigen Controller trotzdem den zuletzt abgefragten Akkustand.",
   monitorCannotStart: "Monitor nicht startbar",
   busN: (bus) => `Bus ${bus}`,
   groupPower: "Energie",
   standbyUnavailable: "Standby-Ausschalten nicht verfügbar",
-  standbyUnavailableHint: "Der Kernelparameter xpad.auto_poweroff ist nicht lesbar (Treiber xpad geladen?).",
+  standbyUnavailableHint: "xpad.auto_poweroff ist nicht lesbar.",
   standbyToggle: "Beim Standby ausschalten",
-  standbyHint: "Alle Controller gehen aus, wenn das Gerät in den Standby geht. Gilt für alle Receiver.",
+  standbyHint: "Controller gehen aus, wenn das Gerät in den Standby geht.",
   shutdownToggle: "Beim Herunterfahren ausschalten",
-  shutdownHint:
-    "Alle Controller gehen aus, wenn das Gerät herunterfährt oder neu startet. Gilt für alle Receiver. Richtet dafür einen kleinen Systemdienst ein, der beim Ausschalten der Option und beim Entfernen des Plugins wieder gelöscht wird.",
+  shutdownHint: "Controller gehen beim Herunterfahren und Neustart aus. Richtet einen kleinen Systemdienst ein.",
   turnOffAllNow: "Alle Controller jetzt ausschalten",
-  turnOffAllNowHint: "Gleicher Ablauf wie beim Herunterfahren, zum Ausprobieren.",
+  turnOffAllNowHint: "Wie beim Herunterfahren.",
 
   receiverTitle: "Receiver",
   receiverN: (n) => `Receiver ${n}`,
@@ -332,11 +329,10 @@ const de: Messages = {
   noControllerConnected: "Kein Controller verbunden",
   moreControllers: (n) => `${n} weiterer Controller verbunden`,
   moreControllersHint: (monitorLabel) =>
-    `Der Slot wurde nicht erkannt. Mit „${monitorLabel}“ (oben) erscheint er hier.`,
+    `Slot unbekannt. Mit „${monitorLabel}“ erscheint er.`,
   groupReceiverLeds: "LEDs dieses Receivers",
   ledUnassigned: "Zuordnung nicht möglich",
-  ledUnassignedHint:
-    "Die Zahl der LEDs passt nicht zur Zahl der erkannten Controller (xpad0 ist Controller 1, xpad1 Controller 2 usw.).",
+  ledUnassignedHint: "Die Zahl der LEDs passt nicht zur Zahl der Controller.",
 
   groupBattery: "Akku",
   groupLed: "LED",
@@ -344,10 +340,10 @@ const de: Messages = {
   lastReport: "Letzte Meldung",
   notReportedYet: "noch nicht gemeldet",
   freshnessMonitorOff: (queryLabel) =>
-    `Die Überwachung ist aus. Der Akkustand wird beim Start des Plugins und mit „${queryLabel}“ ermittelt, nicht laufend.`,
-  freshnessFromLink: "Aus der Verbindungsmeldung; wie frisch der Wert ist, ist unklar.",
+    `Beim Start des Plugins und mit „${queryLabel}“ gelesen.`,
+  freshnessFromLink: "Aus der Verbindungsmeldung; Aktualität unklar.",
   queryBattery: "Akku jetzt abfragen",
-  queryBatteryHint: "Der Controller verschwindet dafür ca. 3 Sekunden. Nicht im Spiel benutzen.",
+  queryBatteryHint: "Der Controller verschwindet ca. 3 s. Nicht im Spiel.",
   turnOffController: "Controller ausschalten",
   detailSlot: "Slot am Receiver",
   detailType: "Typ",

@@ -155,6 +155,37 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(views[0]["unassigned_leds"], ["xpad0"])
 
 
+class LedModeTests(unittest.TestCase):
+    def build(self, env, modes_set=None, monitor=()):
+        return view.build_receiver_views(env.receivers, list(monitor), {"1-2": ["xpad1", "xpad4"]}, {"1-2": {0, 1}},
+                                         None, modes_set)
+
+    def test_default_is_xpads_own_choice_when_nothing_else_is_known(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            [first, _] = self.build(Env(tmp))
+        self.assertEqual([(c["led"], c["last_led_mode"], c["led_mode_source"]) for c in first["controllers"]],
+                         [("xpad1", 3, "default"), ("xpad4", 2, "default")])  # (1 mod 4) + 2 and (4 mod 4) + 2
+
+    def test_a_mode_set_through_the_plugin_beats_the_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            [first, _] = self.build(Env(tmp), modes_set={"xpad4": 10})
+        self.assertEqual([(c["last_led_mode"], c["led_mode_source"]) for c in first["controllers"]],
+                         [(3, "default"), (10, "set")])
+
+    def test_what_the_monitor_saw_beats_everything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = monitor_entry(1, 4, {0, 1})
+            entry["slots"][0]["last_led_mode"] = 6
+            [first, _] = self.build(Env(tmp), modes_set={"xpad1": 10}, monitor=[entry])
+        self.assertEqual((first["controllers"][0]["last_led_mode"], first["controllers"][0]["led_mode_source"]), (6, "monitor"))
+
+    def test_controllers_without_an_assigned_led_get_no_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Env(tmp)
+            [first, _] = view.build_receiver_views(env.receivers, [], {"1-2": ["xpad0"]}, {"1-2": {0, 1}})
+        self.assertTrue(all("led_mode_source" not in c and c["last_led_mode"] is None for c in first["controllers"]))
+
+
 class CachedBatteryTests(unittest.TestCase):
     def build(self, env, monitor=(), cached=None, sysfs=None):
         return view.build_receiver_views(env.receivers, list(monitor), {}, {"1-2": {0}} if sysfs is None else sysfs, cached)

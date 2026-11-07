@@ -86,13 +86,17 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(kernel.log[4], ("write", rumble.EV_FF, 3, 0))  # stop effect 3
         self.assertEqual(kernel.log[5], ("remove", 3))
         self.assertEqual(kernel.uploaded,
-                         (rumble.FF_RUMBLE, -1, 1000, rumble.STRONG_MAGNITUDE, rumble.WEAK_MAGNITUDE))
+                         (rumble.FF_RUMBLE, -1, 3000, rumble.STRONG_MAGNITUDE, rumble.WEAK_MAGNITUDE))
 
     def test_node_is_opened_write_only_so_input_can_never_be_read(self):
         kernel = FakeKernel()
         kernel.play()
         flags = kernel.log[0][2]
         self.assertEqual(flags & os.O_ACCMODE, os.O_WRONLY)
+
+    def test_default_duration_is_a_few_seconds_and_within_the_cap(self):
+        self.assertEqual(rumble.DEFAULT_DURATION_S, 3.0)
+        self.assertLessEqual(rumble.DEFAULT_DURATION_S, rumble.MAX_DURATION_S)
 
     def test_duration_is_capped(self):
         kernel = FakeKernel()

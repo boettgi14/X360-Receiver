@@ -7,6 +7,7 @@ import logging
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -506,7 +507,38 @@ class NewOptionTests(unittest.TestCase):
 
         self.run_plugin(scenario, {"startup_battery_query": False})
 
-    def test_find_controller_rumbles_and_blinks_the_led(self):
+    def test_led_mode_is_known_without_the_monitor(self):
+        async def scenario(main, plugin, tmp):
+            plugin.service._find = lambda: [self.receiver()]
+            leds = Path(tmp) / "leds"
+            (leds / "xpad0").mkdir(parents=True)
+            (leds / "xpad0" / "brightness").write_text("0")
+            owners = {"1-3": ["xpad0"]}
+
+            def show():
+                [receiver] = plugin._build_status()["receivers"]
+                [controller] = receiver["controllers"]
+                return controller["last_led_mode"], controller["led_mode_source"]
+
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0}), \
+                    mock.patch.object(main.controls, "led_owners", lambda: owners), \
+                    mock.patch.object(main.controls, "LED_BASE", leds):
+                self.assertEqual(show(), (2, "default"))  # what xpad sets itself on connecting: (0 mod 4) + 2
+                self.assertTrue((await plugin.set_led("xpad0", 10))["ok"])
+                self.assertEqual(show(), (10, "set"))
+                self.assertTrue((await plugin.reset_led("xpad0"))["ok"])
+                self.assertEqual(show(), (2, "set"))
+                self.assertTrue((await plugin.set_led("xpad0", 7))["ok"])
+                owners.clear()  # the controller left: the LED is gone
+                plugin._build_status()
+                owners["1-3"] = ["xpad0"]  # and came back: xpad has reset the LED
+                self.assertEqual(show(), (2, "default"))
+                self.assertFalse((await plugin.set_led("xpad0", 99))["ok"])
+                self.assertEqual(show(), (2, "default"))  # a refused command is not remembered
+
+        self.run_plugin(scenario, {"startup_battery_query": False})
+
+    def test_find_controller_only_rumbles_and_never_touches_the_led(self):
         async def scenario(main, plugin, tmp):
             plugin.service._find = lambda: [self.receiver()]
             played, led = [], []
@@ -515,8 +547,8 @@ class NewOptionTests(unittest.TestCase):
                     mock.patch.object(main.controls, "led_owners", lambda: {"1-3": ["xpad0"]}), \
                     mock.patch.object(main.controls, "set_led_mode", lambda name, mode: led.append((name, mode))), \
                     mock.patch.object(main.rumble, "play", lambda path, *a, **k: played.append(path)):
-                self.assertEqual(await plugin.find_controller(1, 2, 0), {"ok": True, "led": True})
-                self.assertEqual((played, led), (["/dev/input/event5"], [("xpad0", 15)]))
+                self.assertEqual(await plugin.find_controller(1, 2, 0), {"ok": True})
+                self.assertEqual((played, led), (["/dev/input/event5"], []))  # no LED command at all
                 # a slot without an input device: translated error, nothing played
                 result = await plugin.find_controller(1, 2, 2)
                 self.assertEqual((result["ok"], result["code"]), (False, "rumble_unavailable"))
@@ -529,14 +561,14 @@ class NewOptionTests(unittest.TestCase):
 
         self.run_plugin(scenario, {"startup_battery_query": False})
 
-    def test_find_controller_without_a_known_led_still_rumbles_and_passes_errors_on(self):
+    def test_find_controller_passes_rumble_errors_on(self):
         async def scenario(main, plugin, tmp):
             plugin.service._find = lambda: [self.receiver()]
             with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0}), \
                     mock.patch.object(main.discovery, "input_event_nodes", lambda r, slot: ["event5"]), \
                     mock.patch.object(main.controls, "led_owners", lambda: {}), \
                     mock.patch.object(main.rumble, "play", lambda path, *a, **k: None):
-                self.assertEqual(await plugin.find_controller(1, 2, 0), {"ok": True, "led": False})
+                self.assertEqual(await plugin.find_controller(1, 2, 0), {"ok": True})
 
             def failing(path, *a, **k):
                 raise main.rumble.RumbleError("Cannot open x", "rumble_unavailable", "denied")
@@ -872,6 +904,71 @@ class UninstallTests(unittest.TestCase):
             self.assertTrue(folders_gone, "the folders must not wait for the service removal")
             self.assertFalse(finished_early)
             self.assertTrue(other.exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_unload_and_uninstall_work_without_the_event_loops_thread_executor(self):
+        # On the device `_unload` never finished and Decky killed the plugin after 5 s. Whether the default
+        # executor was the cause is not proven, so shutting down must not depend on it.
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            main = self._load(home, dirs)
+            plugin = main.Plugin()
+            await plugin._main()
+
+            async def broken(*args, **kwargs):
+                raise AssertionError("asyncio.to_thread must not be used while shutting down")
+
+            with mock.patch.object(main.asyncio, "to_thread", broken), \
+                    self.assertLogs("decky-stub", level="INFO") as logs:
+                await plugin._unload()
+                await plugin._uninstall()
+            text = "\n".join(logs.output)
+            for step in ("x360w unloading", "stop monitor: done", "x360w unloaded", "x360w is being removed",
+                         "DECKY_PLUGIN_SETTINGS_DIR deleted", "remove service: done"):
+                self.assertIn(step, text)
+            self.assertFalse(any(d.exists() for d in dirs.values()))
+            self.assertEqual(main.fake_unit.calls, [("uninstall",)])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_a_hanging_monitor_stop_cannot_keep_unload_from_finishing(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            main.SHUTDOWN_STEP_TIMEOUT_S = 0.2
+            plugin = main.Plugin()
+            await plugin._main()
+            gate = threading.Event()
+            plugin.service.disable = lambda: gate.wait(10)
+            started = time.monotonic()
+            with self.assertLogs("decky-stub", level="INFO") as logs:
+                await plugin._unload()
+            gate.set()
+            self.assertLess(time.monotonic() - started, 2.0)
+            text = "\n".join(logs.output)
+            self.assertIn("stop monitor: still running", text)
+            self.assertIn("x360w unloaded", text)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_a_failing_monitor_stop_is_logged_and_unload_still_finishes(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            plugin = main.Plugin()
+            await plugin._main()
+
+            def broken():
+                raise RuntimeError("broken")
+
+            plugin.service.disable = broken
+            with self.assertLogs("decky-stub", level="INFO") as logs:
+                await plugin._unload()
+            text = "\n".join(logs.output)
+            self.assertIn("stop monitor: failed", text)
+            self.assertIn("x360w unloaded", text)
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))

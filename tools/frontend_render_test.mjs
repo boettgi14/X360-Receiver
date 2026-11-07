@@ -104,7 +104,7 @@ const TEXT = {
     moreControllers: "1 more controller connected", ledsOfReceiver: "LEDs of this receiver", slotsInUse: "2 of 4 slots in use",
     unofficial: "(02A9) · unofficial", ledPattern: "LED pattern", mode6: "6: position 1 on",
     diagnostics: "Diagnostics", service: "Shutdown service", runOk: "1 of 1 controllers turned off",
-    time: "Time: 2026-11-05 12:00:00", duration: "Duration: 1.2 s",
+    time: "Time2026-11-05 12:00:00", duration: "Duration1.2 s", // label and value are separate elements
     toggleShutdown: "Turn off on shutdown", toggleStandby: "Turn off on standby",
     noReceiver: "No Xbox 360 receiver found", standbyUnavailable: "Turn-off on standby unavailable",
     noController: "No controller connected", wheel: "Wheel", unknownType: "Unknown (0x1F)",
@@ -118,6 +118,8 @@ const TEXT = {
     toastTitle: "Controller battery low", toastBody: "Controller 2: battery level 0/3",
     toastBodyDe: "Controller 2: Akkustufe 0/3", toastTitleDe: "Controller-Akku niedrig",
     optionAuto: "Automatic (Steam language)", generalDe: "Allgemein", generalEn: "General",
+    testButton: "Send test notification", testBody: "Controller 1: battery level 1/3 (test)", testBodyDe: "Controller 1: Akkustufe 1/3 (Test)",
+    findHint: "Vibrates the controller for a few seconds.", mode2: "2: position 1 blinking, then on",
   },
   de: {
     order: ["Allgemein", "Überwachung", "Energie", "Beim Standby ausschalten", "Beim Herunterfahren ausschalten", "Receiver 1", "Controller 1", "Stufe 2/3", "Controller 3", "Receiver 2"],
@@ -127,7 +129,7 @@ const TEXT = {
     moreControllers: "1 weiterer Controller verbunden", ledsOfReceiver: "LEDs dieses Receivers", slotsInUse: "2 von 4 Slots belegt",
     unofficial: "(02A9) · inoffiziell", ledPattern: "LED-Muster", mode6: "6: Position 1 an",
     diagnostics: "Diagnose", service: "Dienst beim Herunterfahren", runOk: "1 von 1 Controllern ausgeschaltet",
-    time: "Zeit: 2026-11-05 12:00:00", duration: "Dauer: 1.2 s",
+    time: "Zeit2026-11-05 12:00:00", duration: "Dauer1.2 s",
     toggleShutdown: "Beim Herunterfahren", toggleStandby: "Beim Standby",
     noReceiver: "Kein Xbox-360-Receiver gefunden", standbyUnavailable: "Standby-Ausschalten nicht verfügbar",
     noController: "Kein Controller verbunden", wheel: "Lenkrad", unknownType: "Unbekannt (0x1F)",
@@ -141,6 +143,8 @@ const TEXT = {
     toastTitle: "Controller-Akku niedrig", toastBody: "Controller 2: Akkustufe 0/3",
     toastBodyDe: "Controller 2: Akkustufe 0/3", toastTitleDe: "Controller-Akku niedrig",
     optionAuto: "Automatisch (Steam-Sprache)", generalDe: "Allgemein", generalEn: "General",
+    testButton: "Testbenachrichtigung senden", testBody: "Controller 1: Akkustufe 1/3 (Test)", testBodyDe: "Controller 1: Akkustufe 1/3 (Test)",
+    findHint: "Lässt den Controller einige Sekunden vibrieren.", mode2: "2: Position 1 blinkt, dann an",
   },
 };
 
@@ -249,6 +253,14 @@ async function runSuite(lang, languages) {
   assert.equal(dropdown.dataset.selected, "6");
   assert.ok(dropdown.dataset.labels.split("|").includes(T.mode6), `${label} LED mode names are translated`);
 
+  // --- the backend always sends a LED mode for an assigned LED (even without the monitor): the dropdown shows it
+  status = base();
+  status.receivers[0].controllers = [slot(0, { led: "xpad0", last_led_mode: 2, led_mode_source: "default" })];
+  status.receivers[0].unassigned_leds = [];
+  await flush();
+  const ledDropdown = document.querySelector(`.dropdown[data-label^="${T.ledPattern}"]`);
+  assert.equal(ledDropdown.dataset.selected, "2", `${label} default LED mode is selected`);
+
   // --- controller types: translated by subtype number, unknown types shown with their code
   status = base();
   status.receivers[0].controllers = [slot(0, { subtype: 2, subtype_name: "Wheel" }), slot(1, { subtype: 31, subtype_name: "Unknown (0x1F)" })];
@@ -311,6 +323,21 @@ async function runSuite(lang, languages) {
   assert.deepEqual([toasts[1].title, toasts[1].body], [T.toastTitleDe, T.toastBodyDe], `${label} notice language "de"`);
   await flush();
   assert.equal(toasts.length, 2, `${label} a notice is shown once`);
+
+  // --- test notification button: shows a toast right away, in the UI language, without asking the backend
+  toasts.length = 0;
+  const testButton = [...document.querySelectorAll("button")].find((b) => b.textContent.includes(T.testButton));
+  assert.ok(testButton, `${label} test notification button`);
+  await click(testButton);
+  assert.equal(toasts.length, 1, `${label} test toast shown`);
+  assert.deepEqual([toasts[0].title, toasts[0].body], [T.toastTitle, T.testBody]);
+  assert.ok(!calls.some((c) => c[0] === "take_low_battery_notices" && c.length > 1), `${label} no argument leaks`);
+
+  // --- descriptions stay short
+  const descriptions = [...document.querySelectorAll("i")].map((n) => n.textContent).filter(Boolean);
+  const longest = descriptions.reduce((a, b) => (b.length > a.length ? b : a), "");
+  assert.ok(longest.length <= 130, `${label} a description is too long (${longest.length}): ${longest}`);
+  assert.ok(plain().includes(T.findHint), `${label} short find-controller hint`);
 
   // --- diagnostics verdicts
   const verdicts = [

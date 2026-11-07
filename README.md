@@ -12,7 +12,7 @@ UI texts are quoted in English below; the German UI shows the translations from 
 |------|----------------------|
 | **General** (applies to all receivers) | *Monitoring:* "Live USB monitoring" (USB monitor, off by default), "Query battery at start", "Warn when battery is low". *Power:* "Turn off on standby" (turns the controllers off when the device goes to sleep), "Turn off on shutdown", "Turn off all controllers now". *Language:* Automatic (Steam language), English or Deutsch. *Diagnostics:* result of the last run on shutdown. |
 | **Receiver** | One section per receiver, with the connected controllers as expandable cards. |
-| **Controller card** | Battery as a bar with a level (0 to 3, the protocol only knows four levels), "Query battery now", "Turn off controller", "Find controller" (vibrates for about a second and blinks the LED once), LED pattern (modes 0 to 15; `xpad0` is controller 1, `xpad1` controller 2 …), details. |
+| **Controller card** | Battery as a bar with a level (0 to 3, the protocol only knows four levels), "Query battery now", "Turn off controller", "Find controller" (vibrates the controller for about 3 seconds, the LED stays as it is), LED pattern (modes 0 to 15; `xpad0` is controller 1, `xpad1` controller 2 …), details. |
 | **Battery after start** | The receiver reports the battery only when a controller connects. That is why the plugin queries all already connected controllers once right after it starts and remembers the value (switchable with "Query battery at start"). |
 | **Low-battery notification** | A toast appears when a controller reports battery level 0 or 1 of 3, also while the plugin panel is closed. It assumes 0 = empty and 1 = low (unverified) and appears when a controller connects or is queried, because that is when the receiver reports the level. |
 
@@ -146,7 +146,8 @@ node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 - "Turn off on shutdown" has only been tested with one receiver and one controller, and only on shutdown (not specifically on reboot).
 - Focus navigation with the controller in the plugin UI has not been specifically tested.
 - Languages: only English and German. Most German texts are the plugin's original ones; those added later (error messages, controller type names, the newer settings) were written by the assistant and not reviewed by a native speaker. Technical error details from the backend are shown untranslated (English).
-- "Find controller", the low-battery notification and the wake-up handling are only unit-tested and have not been tried on a device. The notification depends on the unverified assumption that level 0 means empty and 1 means low.
+- "Find controller" works on the device according to the user (the controller vibrates). The low-battery notification and the wake-up handling are only unit-tested and have not been tried there; "Send test notification" (General → Monitoring) shows a sample notice so the display can be checked. The notification depends on the unverified assumption that level 0 means empty and 1 means low.
+- Without a battery query and without live USB monitoring a card shows no battery level and no controller type or headset/chatpad details: the receiver only reports them on connecting and on a query. The LED pattern shows the mode xpad sets on connecting (`(N mod 4) + 2`) until you change it.
 - Everything that needs other hardware has not been tested: a battery that drains, other battery types or charging, a second receiver, other controller types (guitar, wheel, drums), headset and chatpad.
 
 ## License

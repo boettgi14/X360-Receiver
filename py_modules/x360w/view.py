@@ -27,6 +27,7 @@ def build_receiver_views(
     led_owners: Dict[str, List[str]],
     sysfs_slots: Dict[str, Set[int]],
     cached_batteries: Optional[Dict[Tuple[int, int, int], dict]] = None,
+    led_modes_set: Optional[Dict[str, int]] = None,
 ) -> List[dict]:
     by_key: Dict[Tuple[int, int], List[dict]] = {
         (entry["bus"], entry["devnum"]): entry["slots"] for entry in monitor_snapshot
@@ -56,6 +57,7 @@ def build_receiver_views(
         if controllers and len(controllers) == len(leds):
             for controller, name in zip(controllers, leds):  # controllers are sorted by slot
                 controller["led"] = name
+                _fill_led_mode(controller, name, led_modes_set or {})
             unassigned = []
 
         view = receiver.to_dict()
@@ -69,6 +71,23 @@ def build_receiver_views(
         )
         views.append(view)
     return views
+
+
+def _fill_led_mode(controller: dict, name: str, modes_set: Dict[str, int]) -> None:
+    """Gives `last_led_mode` a value when the monitor has not seen an LED command.
+
+    Order: what the monitor saw; else what the plugin itself set (still valid while the LED exists);
+    else the mode xpad sets by itself when a controller connects, `(N mod 4) + 2` (confirmed in a capture
+    for xpad0, derived from the source for the others). `led_mode_source` says which one it is.
+    """
+    if controller.get("last_led_mode") is not None:
+        controller["led_mode_source"] = "monitor"
+    elif name in modes_set:
+        controller["last_led_mode"] = modes_set[name]
+        controller["led_mode_source"] = "set"
+    else:
+        controller["last_led_mode"] = (int(name[4:]) % 4) + 2
+        controller["led_mode_source"] = "default"
 
 
 def _apply_cached_battery(data: dict, key: Tuple, cached: Optional[Dict[Tuple[int, int, int], dict]]) -> None:
