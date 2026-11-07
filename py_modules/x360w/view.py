@@ -19,6 +19,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .discovery import ReceiverInfo
 from .monitor import SLOT_COUNT, blank_slot_dict
+from .protocol import SUBTYPE_NAMES
 
 
 def build_receiver_views(
@@ -95,6 +96,9 @@ def _apply_cached_battery(data: dict, key: Tuple, cached: Optional[Dict[Tuple[in
     entry = (cached or {}).get(key)
     if entry is None:
         return
+    if entry.get("subtype") is not None and data.get("subtype") is None:  # the type does not age: the monitor has none
+        data["subtype"] = entry["subtype"]
+        data["subtype_name"] = SUBTYPE_NAMES.get(entry["subtype"], f"Unknown (0x{entry['subtype']:02X})")
     monitor_age = data.get("state_age_s")
     if data.get("battery_level") is not None and monitor_age is not None and monitor_age <= entry["age_s"]:
         return  # the monitor has a newer value

@@ -22,15 +22,18 @@ from typing import Callable, List, Optional
 from . import error_codes
 from .protocol import (
     InputReport,
+    LinkReport,
     StateReport,
     build_battery_request,
     build_poweroff,
+    build_status_request,
 )
 from .takeover import Backend, LibusbBackend, SlotSession, UsbError
 
 DRAIN_S = 0.3
 BATTERY_LISTEN_S = 1.0
 POWEROFF_LISTEN_S = 0.6
+PRESENCE_LISTEN_S = 0.5
 
 BUSY_ERROR = "Another access to the receiver is already running."
 BUSY_CODE = error_codes.BUSY
@@ -84,13 +87,23 @@ def _run(bus: int, devnum: int, slot: int, backend_factory: Callable[[], Backend
 
 def query_battery(bus: int, devnum: int, slot: int,
                   backend_factory: Callable[[], Backend] = LibusbBackend) -> dict:
-    """Sends the battery request. `state` is None if no answer came (e.g. controller off)."""
+    """Sends the battery request. `state` is None if no answer came (e.g. controller off).
+
+    If the controller answered, a presence request follows (`08 00 0F C0`, the one xpad sends itself when it
+    binds; confirmed on hardware with tools/probe_takeover.py). The receiver answers it with the link report,
+    which carries the controller type, so `subtype` is known even without the usbmon monitor (None if no link
+    report came). The result then reads {"ok", "state", "subtype"}.
+    """
 
     def body(session: SlotSession) -> dict:
         session.listen(DRAIN_S)  # discard leftover packets
         session.send(build_battery_request())
         states = _states(session.listen(BATTERY_LISTEN_S))
-        return {"ok": True, "state": _state_dict(states[0]) if states else None}
+        if not states:
+            return {"ok": True, "state": None}
+        session.send(build_status_request())
+        links = [r for _, _, r in session.listen(PRESENCE_LISTEN_S) if isinstance(r, LinkReport)]
+        return {"ok": True, "state": _state_dict(states[0]), "subtype": links[0].subtype if links else None}
 
     return _run(bus, devnum, slot, backend_factory, body)
 

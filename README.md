@@ -16,9 +16,11 @@ UI texts are quoted in English below; the German UI shows the translations from 
 | **Battery after start** | The receiver reports the battery only when a controller connects. That is why the plugin queries all already connected controllers once right after it starts and remembers the value (switchable with "Query battery at start"). |
 | **Low-battery notification** | A toast appears when a controller reports battery level 0 or 1 of 3, also while the plugin panel is closed. It assumes 0 = empty and 1 = low (unverified) and appears when a controller connects or is queried, because that is when the receiver reports the level. |
 
-### What "Live USB monitoring" does and does not do
+### What "Live USB monitoring" brings
 
 The switch only decides whether the plugin follows the receivers' USB traffic live (usbmon). With it **off**, which is the default, the plugin still lists the connected controllers (it finds them through the system, in sysfs) and shows a battery level whenever one is known: from the query at plugin start ("Query battery at start") or from "Query battery now". With it **on**, connections and battery reports are also picked up the moment they happen, for example when a controller connects. To see no battery levels at all, switch off "Query battery at start" as well and do not query by hand.
+
+In practice the monitor matters for one thing: **a controller that connects after the plugin has started shows its battery level by itself** (confirmed on the device), without the 3-second drop-out of a query. It also shows live details (headset, chatpad, the last LED command). If you always switch the controllers on first and then the device, it brings little; the query at start covers that. The controller type is also learned by every battery query (the query asks the receiver for the link report afterwards), so it no longer needs the monitor.
 
 ## Languages
 
@@ -67,7 +69,7 @@ The plugin is private: there is no store entry, you build the zip yourself (see 
 3. There, under "Third-Party Plugins", press **Browse** next to **Install Plugin from ZIP File**, choose the zip, confirm the notice.
 4. The plugin appears in the Decky menu as "X360 Receiver".
 
-**Remove:** In the Decky menu choose **Uninstall** for "X360 Receiver". The plugin resets `auto_poweroff` to its original value, removes the systemd service together with `/var/lib/x360-receiver/`, and deletes its settings, data and log folders. Not undone are the loaded kernel module `usbmon` (until reboot) and a set LED mode (until the next connect). If the plugin folder was deleted behind Decky's back, the service stays behind:
+**Remove:** In the Decky menu choose **Uninstall** for "X360 Receiver". The plugin resets `auto_poweroff` to its original value, and removes the systemd service together with `/var/lib/x360-receiver/`. It does **not** delete its settings, data and log folders (`~/homebrew/settings`, `~/homebrew/data` and `~/homebrew/logs`, each with a folder `X360 Receiver`); they stay behind and can be removed by hand: `sudo rm -rf "$HOME/homebrew/"{settings,data,logs}"/X360 Receiver"`. Not undone are the loaded kernel module `usbmon` (until reboot) and a set LED mode (until the next connect). If the plugin folder was deleted behind Decky's back, the service stays behind:
 
 ```bash
 sudo systemctl disable --now x360-receiver-poweroff.service
@@ -75,7 +77,7 @@ sudo rm -rf /etc/systemd/system/x360-receiver-poweroff.service /var/lib/x360-rec
 sudo systemctl daemon-reload
 ```
 
-**Update:** install the same zip again. Decky first removes the old version (including cleanup); saved settings are lost, the options are off afterwards.
+**Update:** install the same zip again. Decky first removes the old version; saved settings stay, so the options keep their values.
 
 ## Building
 
@@ -123,6 +125,7 @@ node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 | `tests/` | Unit tests and captures (`tests/fixtures/`) |
 | `tools/make_zip.py` | builds the zip for Decky |
 | `tools/frontend_render_test.mjs` | render test of the built frontend (both languages) |
+| `tools/decky_stop_sim.py` | simulates how Decky stops a plugin (SIGTERM, 5 s, SIGKILL) around `main.py`; shows the exit watchdog at work (Linux) |
 | `tools/discover.sh` | read-only system check (receiver, `xpad`, LEDs, usbmon) |
 | `tools/capture_usbmon.py` | records and decodes a receiver's packets (root, only bus and device from `discover.sh`) |
 | `tools/probe_takeover.py` | sends a battery request or turn-off to one slot (root; not during a game) |
@@ -132,7 +135,7 @@ node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 
 ## Security and privacy
 
-- The backend runs as root but writes only to the named sysfs paths and knows exactly these external calls: `modprobe usbmon`, `systemctl daemon-reload | enable --now | disable --now` for its one own service (all with an absolute path and a sanitized environment, without user input) and the two USB commands of the short access to known receivers and slots 0 to 3. For "Find controller" it additionally writes one force-feedback effect to the `/dev/input/eventN` node that sysfs shows under a known receiver's slot interface (write-only, fixed strength, at most 3 seconds).
+- The backend runs as root but writes only to the named sysfs paths and knows exactly these external calls: `modprobe usbmon`, `systemctl daemon-reload | enable --now | disable --now` for its one own service (all with an absolute path and a sanitized environment, without user input) and the USB commands of the short access to known receivers and slots 0 to 3 (battery request, presence request, turn off). For "Find controller" it additionally writes one force-feedback effect to the `/dev/input/eventN` node that sysfs shows under a known receiver's slot interface (write-only, fixed strength, at most 3 seconds).
 - The service runs as root. Its folder and files belong to root and are writable only by root (0644/0755, independent of the `umask`); symlinks at these locations are rejected.
 - usbmon is off by default and is only loaded with the "Live USB monitoring" switch. Captures of other devices are discarded immediately and never stored or logged; input packets are only counted.
 - There is no network access.

@@ -19,6 +19,7 @@ removed: Decky does not reliably stop the plugin on shutdown (observed on the de
 """
 
 import asyncio
+import faulthandler
 import json
 import os
 import re
@@ -54,6 +55,7 @@ STARTUP_QUERY_DELAY_S = 1.0  # short pause after start so Decky can finish loadi
 QUERY_BUSY_RETRIES = 5
 QUERY_BUSY_WAIT_S = 0.5
 SHUTDOWN_STEP_TIMEOUT_S = 2.0  # per slow step while unloading/uninstalling; Decky kills the plugin after 5 s in total
+EXIT_WATCHDOG_S = 4.3  # after this many seconds in _unload the process is ended; Decky sends SIGKILL after 5 s
 MAX_NOTICES = 16  # pending low-battery notices; older ones are dropped
 LANGUAGE_RE = re.compile(r"auto|[a-z]{2}(-[A-Za-z]{2,4})?")
 PACKAGE_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "py_modules" / "x360w"
@@ -206,7 +208,7 @@ class Plugin:
                 break
             time.sleep(QUERY_BUSY_WAIT_S)
         if result.get("ok") and result.get("state"):
-            self.batteries.store((bus, devnum, slot), result["state"])
+            self.batteries.store((bus, devnum, slot), dict(result["state"], subtype=result.get("subtype")))
         return result
 
     async def _refresh_loop(self):
@@ -236,13 +238,30 @@ class Plugin:
                 self._notices.extend({"slot": n["slot"], "level": n["level"]} for n in notices)
                 del self._notices[:-MAX_NOTICES]
 
+    def _arm_exit_watchdog(self) -> None:
+        """Makes sure the process ends before Decky's 5 s limit, whatever keeps it alive.
+
+        Decky waits 5 s after SIGTERM and then sends SIGKILL. On the device that happened on every stop of
+        the plugin, also on a plain reload, and the cause is NOT known (it could not be reproduced with a
+        copy of Decky's stop sequence). So this does not depend on the cause: `faulthandler` runs its own
+        C-level thread, which, after `EXIT_WATCHDOG_S`, writes the stack of every thread to the log (the journal
+        then shows what is stuck) and ends the process with `_exit`. If the plugin ends in time on its own,
+        the process is gone and the watchdog with it.
+        """
+        for stream in (sys.stderr, sys.stdout, getattr(sys, "__stderr__", None)):
+            try:
+                faulthandler.dump_traceback_later(EXIT_WATCHDOG_S, exit=True, file=stream)
+                _log("info", f"x360w: exit watchdog armed ({EXIT_WATCHDOG_S} s)")
+                return
+            except (AttributeError, OSError, ValueError, RuntimeError, TypeError):
+                continue
+        _log("warning", "x360w: exit watchdog could not be armed (no usable output stream)")
+
     async def _run_bounded(self, name: str, function, timeout_s: float) -> bool:
         """Runs `function` in a plain daemon thread and waits at most `timeout_s` for it. Never raises.
 
-        Used while the plugin is shutting down. `asyncio.to_thread` needs the event loop's default executor,
-        and on the device `_unload` never finished (Decky killed the plugin after 5 s, every time, also on
-        a plain reload; the log line "x360w unloaded" never appeared). Whether the executor is the cause is
-        not proven; a bare thread and a deadline cannot hang on it. Every step is logged with its time.
+        Used while the plugin is shutting down. It avoids `asyncio.to_thread` (the event loop's default
+        executor), which is the only awaited step the old `_unload` had. Every step is logged with its time.
         """
         started = time.monotonic()
         outcome: dict = {}
@@ -269,6 +288,7 @@ class Plugin:
 
     async def _unload(self):
         _log("info", "x360w unloading")
+        self._arm_exit_watchdog()
         for task in (self.refresh_task, self.startup_task, self.unit_task):
             if task is not None:
                 task.cancel()
@@ -279,14 +299,13 @@ class Plugin:
     async def _uninstall(self):
         """Called by Decky after `_unload` on removal (also when reinstalling from a ZIP).
 
-        Restores auto_poweroff, deletes the plugin's own folders under DECKY_HOME and removes the systemd
-        service. Decky deletes the plugin folder itself afterwards. Not undone: the loaded kernel module
-        usbmon (until reboot) and LED modes (until the controller connects the next time).
+        Restores auto_poweroff and removes the systemd service. Decky deletes the plugin folder itself.
+        The plugin does not delete its settings, data and log folders under DECKY_HOME (decision of the
+        user); they stay and can be removed by hand. Not undone: the loaded kernel module usbmon (until
+        reboot) and LED modes (until the controller connects the next time).
 
-        Decky kills a plugin that needs more than about 5 s to shut down (observed on the device), so the
-        quick steps come first: restoring the parameter and deleting the folders (plain calls, no thread,
-        a few milliseconds), then the service removal, which runs `systemctl` and can take seconds. Every
-        step and every refusal is logged with its reason.
+        Decky kills a plugin that needs more than about 5 s to shut down, so the quick step comes first and
+        the service removal (`systemctl`, can take seconds) is bounded. Every step is logged.
         """
         _log("info", "x360w is being removed")
         try:
@@ -295,20 +314,6 @@ class Plugin:
                 _log("info", "auto_poweroff reset to its original value")
         except (OSError, ValueError) as exc:
             _log("error", f"auto_poweroff not reset: {exc!r}")
-
-        home = getattr(decky, "DECKY_HOME", None)
-        for attr in ("DECKY_PLUGIN_SETTINGS_DIR", "DECKY_PLUGIN_RUNTIME_DIR", "DECKY_PLUGIN_LOG_DIR"):
-            path = getattr(decky, attr, None)
-            reason = cleanup.refusal_reason(path, home)
-            if reason is not None:
-                _log("warning", f"{attr} not deleted: {reason}")
-                continue
-            try:
-                cleanup.remove_plugin_dir(path, home)
-                _log("info", f"{attr} deleted")
-            except OSError as exc:
-                _log("error", f"{attr} not deleted: {exc!r}")
-
         # even if the option is off: leave no remnant behind
         await self._run_bounded("remove service", poweroff_unit.uninstall, SHUTDOWN_STEP_TIMEOUT_S)
 

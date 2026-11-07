@@ -629,22 +629,25 @@ function Content() {
                 <Chevron open={open["diagnostics"] === true} />
               </Field>
             </PanelSectionRow>
-            {open["diagnostics"] === true &&
-              status.diagnostics.lines.map((line, i) => (
-                <PanelSectionRow key={i}>
-                  <Field
-                    label={(t.diagnosticLines as Record<string, string | undefined>)[line.key] ?? line.key}
-                    focusable
-                    bottomSeparator="none"
-                    padding="compact"
-                    childrenLayout="below"
-                  >
-                    <div style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                      {line.value}
-                    </div>
-                  </Field>
-                </PanelSectionRow>
-              ))}
+            {open["diagnostics"] === true && (
+              <div style={{ borderLeft: `2px solid ${LINE}`, margin: "0 0 6px 14px", paddingLeft: 8 }}>
+                {status.diagnostics.lines.map((line, i) => (
+                  <PanelSectionRow key={i}>
+                    <Field
+                      label={(t.diagnosticLines as Record<string, string | undefined>)[line.key] ?? line.key}
+                      focusable
+                      bottomSeparator="none"
+                      padding="compact"
+                      childrenLayout="below"
+                    >
+                      <div style={{ fontFamily: "monospace", fontSize: 11, opacity: 0.8, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                        {line.value}
+                      </div>
+                    </Field>
+                  </PanelSectionRow>
+                ))}
+              </div>
+            )}
           </Group>
         )}
       </PanelSection>

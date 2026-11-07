@@ -216,6 +216,27 @@ class CachedBatteryTests(unittest.TestCase):
         c = first["controllers"][0]
         self.assertEqual((c["battery_level"], c["state_source"]), (1, "query"))
 
+    def test_queried_controller_type_shows_without_the_monitor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            [first, _] = self.build(Env(tmp), cached={(1, 4, 0): dict(self.entry(), subtype=6)})
+        c = first["controllers"][0]
+        self.assertEqual((c["subtype"], c["subtype_name"]), (6, "Guitar"))
+
+    def test_unknown_queried_type_is_named_unknown_and_a_missing_one_changes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Env(tmp)
+            [odd, _] = self.build(env, cached={(1, 4, 0): dict(self.entry(), subtype=0x1F)})
+            [none, _] = self.build(env, cached={(1, 4, 0): dict(self.entry(), subtype=None)})
+        self.assertEqual(odd["controllers"][0]["subtype_name"], "Unknown (0x1F)")
+        self.assertEqual((none["controllers"][0]["subtype"], none["controllers"][0]["subtype_name"]), (None, None))
+
+    def test_the_monitors_type_wins_over_the_queried_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            entry = monitor_entry(1, 4, {0})
+            entry["slots"][0].update(subtype=1, subtype_name="Gamepad")
+            [first, _] = self.build(Env(tmp), monitor=[entry], cached={(1, 4, 0): dict(self.entry(), subtype=6)})
+        self.assertEqual(first["controllers"][0]["subtype_name"], "Gamepad")
+
     def test_cache_of_other_slot_or_receiver_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:
             [first, second] = self.build(Env(tmp), sysfs={"1-2": {0}, "3-1": {0}},

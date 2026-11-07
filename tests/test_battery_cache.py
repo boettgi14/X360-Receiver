@@ -31,6 +31,12 @@ class BatteryCacheTests(unittest.TestCase):
         self.assertEqual((entry["battery_level"], entry["battery_type_raw"], entry["power_state_raw"]), (2, 1, 2))
         self.assertAlmostEqual(entry["age_s"], 42.0)
 
+    def test_the_controller_type_is_kept_with_the_entry(self):
+        self.cache.store((1, 2, 0), dict(STATE, subtype=6))
+        self.cache.store((1, 2, 1), STATE)  # a query that learned no type
+        snapshot = self.cache.snapshot()
+        self.assertEqual((snapshot[(1, 2, 0)]["subtype"], snapshot[(1, 2, 1)]["subtype"]), (6, None))
+
     def test_newer_value_replaces_older(self):
         self.cache.store((1, 2, 0), STATE)
         self.clock.now += 100

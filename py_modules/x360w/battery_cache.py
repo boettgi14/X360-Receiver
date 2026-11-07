@@ -34,6 +34,7 @@ class BatteryCache:
             "battery_level": state["battery_level"],
             "battery_type_raw": state.get("battery_type_raw"),
             "power_state_raw": state.get("power_state_raw"),
+            "subtype": state.get("subtype"),
             "at": self._clock(),
         }
         with self._lock:
@@ -48,6 +49,7 @@ class BatteryCache:
                     "battery_level": e["battery_level"],
                     "battery_type_raw": e["battery_type_raw"],
                     "power_state_raw": e["power_state_raw"],
+                    "subtype": e["subtype"],
                     "age_s": max(0.0, now - e["at"]),
                 }
                 for key, e in self._entries.items()

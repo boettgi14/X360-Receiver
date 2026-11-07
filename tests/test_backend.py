@@ -63,6 +63,8 @@ def load_main(settings_dir, **attrs):
     spec = importlib.util.spec_from_file_location("x360w_main", ROOT / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The real watchdog would end the test process 4.3 s after any _unload; tests that look at it patch this stand-in.
+    module.faulthandler = types.SimpleNamespace(dump_traceback_later=lambda *a, **k: None)
     module.poweroff_unit = module.fake_unit = FakeUnit()  # replaced in main.py only, the real module stays untouched
     return module
 
@@ -788,10 +790,8 @@ class UninstallTests(unittest.TestCase):
         for d in dirs.values():
             d.mkdir(parents=True)
             (d / "file").write_text("x")
-        other = home / "settings" / "Other Plugin"
-        other.mkdir()
         param = Path(tmp) / "auto_poweroff"
-        return home, dirs, other, param
+        return home, dirs, param
 
     def _load(self, home, dirs):
         return load_main(
@@ -802,9 +802,9 @@ class UninstallTests(unittest.TestCase):
             DECKY_PLUGIN_LOG_DIR=str(dirs["logs"]),
         )
 
-    def test_uninstall_restores_auto_poweroff_and_removes_own_dirs_only(self):
+    def test_uninstall_restores_auto_poweroff_removes_the_service_and_leaves_the_folders(self):
         async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
+            home, dirs, param = self._setup(tmp)
             param.write_text("Y\n")
             main = self._load(home, dirs)
             main.controls.AUTO_POWEROFF_PARAM = param
@@ -820,17 +820,16 @@ class UninstallTests(unittest.TestCase):
             await plugin._unload()
             await plugin._uninstall()
             self.assertEqual(param.read_text().strip(), "Y")
-            for d in dirs.values():
-                self.assertFalse(d.exists(), d)
-            self.assertTrue(other.exists())  # foreign plugin untouched
-            self.assertTrue(home.exists())
+            self.assertEqual(main.fake_unit.calls, [("uninstall",)])
+            for d in dirs.values():  # the plugin never deletes these (decision of the user)
+                self.assertTrue((d / "file").exists(), d)
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
-    def test_uninstall_without_changes_touches_nothing_but_own_dirs(self):
+    def test_uninstall_without_changes_touches_nothing(self):
         async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
+            home, dirs, param = self._setup(tmp)
             param.write_text("N\n")
             main = self._load(home, dirs)
             main.controls.AUTO_POWEROFF_PARAM = param
@@ -839,80 +838,54 @@ class UninstallTests(unittest.TestCase):
             await plugin._unload()
             await plugin._uninstall()
             self.assertEqual(param.read_text(), "N\n")  # never changed, so not touched
-            self.assertFalse(dirs["settings"].exists())
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
     def test_uninstall_removes_the_service_even_if_the_option_is_off_and_survives_its_failure(self):
         async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
-            main = self._load(home, dirs)
-            plugin = main.Plugin()
-            await plugin._main()
-            await plugin._unload()
-            await plugin._uninstall()
-            self.assertEqual(main.fake_unit.calls, [("uninstall",)])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            asyncio.run(scenario(tmp))
-
-    def test_failing_service_removal_does_not_block_folder_cleanup(self):
-        async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
+            home, dirs, param = self._setup(tmp)
             main = self._load(home, dirs)
 
             def boom(*args):
                 raise RuntimeError("broken")
 
-            main.fake_unit.uninstall = boom
             plugin = main.Plugin()
             await plugin._main()
             await plugin._unload()
             await plugin._uninstall()
-            for d in dirs.values():
-                self.assertFalse(d.exists(), d)
+            self.assertEqual(main.fake_unit.calls, [("uninstall",)])
+            main.fake_unit.uninstall = boom
+            with self.assertLogs("decky-stub", level="ERROR") as logs:
+                await plugin._uninstall()  # must not raise
+            self.assertIn("remove service: failed", "\n".join(logs.output))
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
-    def test_folders_are_deleted_while_the_slow_service_removal_is_still_running(self):
-        # Decky kills a plugin that needs more than about 5 s to shut down; `systemctl` can take a few seconds.
+    def test_a_slow_service_removal_is_not_waited_for_forever(self):
         async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
+            home, dirs, param = self._setup(tmp)
             main = self._load(home, dirs)
-            started, release = threading.Event(), threading.Event()
-
-            def slow(*args):
-                started.set()
-                release.wait(10)
-                return {"ok": True, "errors": []}
-
-            main.fake_unit.uninstall = slow
+            main.SHUTDOWN_STEP_TIMEOUT_S = 0.2
+            gate = threading.Event()
+            main.fake_unit.uninstall = lambda *args: gate.wait(10)
             plugin = main.Plugin()
             await plugin._main()
             await plugin._unload()
-            task = asyncio.ensure_future(plugin._uninstall())
-            for _ in range(200):
-                if started.is_set() and not any(d.exists() for d in dirs.values()):
-                    break
-                await asyncio.sleep(0.01)
-            folders_gone = not any(d.exists() for d in dirs.values())
-            finished_early = task.done()
-            release.set()
-            await task
-            self.assertTrue(folders_gone, "the folders must not wait for the service removal")
-            self.assertFalse(finished_early)
-            self.assertTrue(other.exists())
+            started = time.monotonic()
+            with self.assertLogs("decky-stub", level="WARNING") as logs:
+                await plugin._uninstall()
+            gate.set()
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertIn("remove service: still running", "\n".join(logs.output))
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
     def test_unload_and_uninstall_work_without_the_event_loops_thread_executor(self):
-        # On the device `_unload` never finished and Decky killed the plugin after 5 s. Whether the default
-        # executor was the cause is not proven, so shutting down must not depend on it.
         async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
+            home, dirs, param = self._setup(tmp)
             main = self._load(home, dirs)
             plugin = main.Plugin()
             await plugin._main()
@@ -926,9 +899,8 @@ class UninstallTests(unittest.TestCase):
                 await plugin._uninstall()
             text = "\n".join(logs.output)
             for step in ("x360w unloading", "stop monitor: done", "x360w unloaded", "x360w is being removed",
-                         "DECKY_PLUGIN_SETTINGS_DIR deleted", "remove service: done"):
+                         "remove service: done"):
                 self.assertIn(step, text)
-            self.assertFalse(any(d.exists() for d in dirs.values()))
             self.assertEqual(main.fake_unit.calls, [("uninstall",)])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -973,38 +945,50 @@ class UninstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
-    def test_a_refused_folder_stays_and_the_reason_is_logged(self):
+    def test_unload_arms_the_exit_watchdog_before_anything_else_that_can_hang(self):
         async def scenario(tmp):
-            home, dirs, other, param = self._setup(tmp)
-            main = load_main(
-                str(dirs["settings"]),
-                DECKY_HOME=str(home / "not-the-real-home"),  # does not match the plugin folders
-                DECKY_PLUGIN_SETTINGS_DIR=str(dirs["settings"]),
-                DECKY_PLUGIN_RUNTIME_DIR=str(dirs["data"]),
-                DECKY_PLUGIN_LOG_DIR=str(dirs["logs"]),
-            )
+            main = load_main(tmp)
             plugin = main.Plugin()
             await plugin._main()
-            await plugin._unload()
-            with self.assertLogs("decky-stub", level="WARNING") as logs:
-                await plugin._uninstall()
-            text = "\n".join(logs.output)
-            for attr in ("DECKY_PLUGIN_SETTINGS_DIR", "DECKY_PLUGIN_RUNTIME_DIR", "DECKY_PLUGIN_LOG_DIR"):
-                self.assertIn(f"{attr} not deleted: ", text)
-            self.assertIn("is not exactly DECKY_HOME", text)
-            self.assertTrue(all(d.exists() for d in dirs.values()))  # nothing outside DECKY_HOME is touched
+            armed = []
+            order = []
+            real_cancel_all = plugin._run_bounded
+
+            async def spy(name, function, timeout):
+                order.append(("step", name, bool(armed)))  # was the watchdog armed before the first step?
+                return await real_cancel_all(name, function, timeout)
+
+            plugin._run_bounded = spy
+            with mock.patch.object(main.faulthandler, "dump_traceback_later",
+                                   lambda timeout, **kw: armed.append((timeout, kw.get("exit")))):
+                await plugin._unload()
+            self.assertEqual(len(armed), 1)
+            timeout, exit_flag = armed[0]
+            self.assertTrue(exit_flag, "the watchdog must end the process, not only print")
+            self.assertLess(timeout, 5.0, "it has to fire before Decky's SIGKILL after 5 s")
+            self.assertGreater(timeout, main.SHUTDOWN_STEP_TIMEOUT_S * 2, "and not before the normal steps are done")
+            self.assertEqual(order, [("step", "stop monitor", True)])
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
-    def test_uninstall_survives_missing_dirs_and_missing_decky_home(self):
+    def test_the_watchdog_falls_back_to_the_next_stream_and_never_raises(self):
         async def scenario(tmp):
-            main = load_main(tmp)  # stand-in without DECKY_HOME and without plugin directories
+            main = load_main(tmp)
             plugin = main.Plugin()
             await plugin._main()
-            await plugin._unload()
-            await plugin._uninstall()  # must not raise
-            self.assertTrue(Path(tmp).exists())
+            calls = []
+
+            def flaky(timeout, **kw):
+                calls.append(kw["file"])
+                if len(calls) == 1:
+                    raise ValueError("bad file descriptor")
+
+            with mock.patch.object(main.faulthandler, "dump_traceback_later", flaky):
+                plugin._arm_exit_watchdog()
+            self.assertEqual(len(calls), 2)  # the second stream worked
+            with mock.patch.object(main.faulthandler, "dump_traceback_later", side_effect=OSError("nope")):
+                plugin._arm_exit_watchdog()  # all streams fail: only a warning
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))

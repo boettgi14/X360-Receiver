@@ -8,12 +8,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "py_modules"))
 
-from x360w import actions, build_battery_request, build_poweroff  # noqa: E402
+from x360w import actions, build_battery_request, build_poweroff, build_status_request  # noqa: E402
 from x360w.takeover import UsbError  # noqa: E402
 
 STATE_A2 = bytes.fromhex("00000013a2") + bytes(24)
 STATE_82 = bytes.fromhex("0000001382") + bytes(24)
 EMPTY = bytes.fromhex("000000f000") + bytes(24)
+# link report of a gamepad (subtype 0x01), as in tests/test_protocol.py; the same with subtype 0x06 (guitar)
+LINK_GAMEPAD = bytes.fromhex("000f00f0f0cc" "fd1f9f70" "c90063b0" "00" "05" "13a7" "201d" "3003" "400150" "01" "ffffff")
+LINK_GUITAR = LINK_GAMEPAD[:-4] + bytes([0x06]) + LINK_GAMEPAD[-3:]
 
 
 class Fake:
@@ -43,28 +46,57 @@ class Fake:
         self.calls.append(("close",))
 
 
+class Scripted(Fake):
+    """Answers each command with its own packets (the receiver answers a battery request with a state packet
+    and a presence request with the connection packet and the link report)."""
+
+    def __init__(self, answers):
+        super().__init__()
+        self.answers = answers
+
+    def write(self, ep, data, timeout_ms):
+        self.calls.append(("write", ep, data))
+        self.replies.extend(self.answers.get(bytes(data), []))
+
+
 class ActionTests(unittest.TestCase):
     def setUp(self):
         # Let time pass quickly: listen() uses monotonic; the dummy returns None immediately
         self._d, self._b, self._p = actions.DRAIN_S, actions.BATTERY_LISTEN_S, actions.POWEROFF_LISTEN_S
-        actions.DRAIN_S = actions.BATTERY_LISTEN_S = actions.POWEROFF_LISTEN_S = 0.05
+        self._presence = actions.PRESENCE_LISTEN_S
+        actions.DRAIN_S = actions.BATTERY_LISTEN_S = actions.POWEROFF_LISTEN_S = actions.PRESENCE_LISTEN_S = 0.05
 
     def tearDown(self):
         actions.DRAIN_S, actions.BATTERY_LISTEN_S, actions.POWEROFF_LISTEN_S = self._d, self._b, self._p
+        actions.PRESENCE_LISTEN_S = self._presence
 
-    def test_query_battery_returns_state_and_sends_only_the_request(self):
+    def test_query_battery_returns_state_and_sends_only_the_two_known_requests(self):
         fake = Fake(answer=[STATE_A2, EMPTY])
         result = actions.query_battery(1, 2, 1, lambda: fake)
         writes = [c for c in fake.calls if c[0] == "write"]
-        self.assertEqual(writes, [("write", 0x03, build_battery_request())])
+        self.assertEqual(writes, [("write", 0x03, build_battery_request()), ("write", 0x03, build_status_request())])
         self.assertEqual([c[0] for c in fake.calls][-2:], ["release", "close"])
         self.assertTrue(result["ok"])
         self.assertEqual(result["state"]["battery_level"], 2)
         self.assertEqual(result["state"]["power_state_raw"], 2)
 
-    def test_query_battery_without_answer_has_no_state(self):
-        result = actions.query_battery(1, 2, 0, lambda: Fake())
+    def test_query_battery_without_answer_has_no_state_and_sends_no_presence_request(self):
+        fake = Fake()
+        result = actions.query_battery(1, 2, 0, lambda: fake)
         self.assertEqual(result, {"ok": True, "state": None})
+        self.assertEqual([c for c in fake.calls if c[0] == "write"], [("write", 0x01, build_battery_request())])
+
+    def test_query_battery_learns_the_controller_type_from_the_link_report(self):
+        answers = {build_battery_request(): [STATE_A2], build_status_request(): [bytes.fromhex("0880"), LINK_GUITAR]}
+        result = actions.query_battery(1, 2, 0, lambda: Scripted(answers))
+        self.assertEqual((result["ok"], result["state"]["battery_level"], result["subtype"]), (True, 2, 0x06))
+        answers[build_status_request()] = [bytes.fromhex("0880"), LINK_GAMEPAD]
+        self.assertEqual(actions.query_battery(1, 2, 0, lambda: Scripted(answers))["subtype"], 0x01)
+
+    def test_query_battery_without_a_link_report_still_returns_the_state(self):
+        answers = {build_battery_request(): [STATE_A2]}
+        result = actions.query_battery(1, 2, 0, lambda: Scripted(answers))
+        self.assertEqual((result["ok"], result["state"]["battery_level"], result["subtype"]), (True, 2, None))
 
     def test_power_off_sends_c0_to_slot_endpoint_and_reports_confirmation(self):
         fake = Fake()
