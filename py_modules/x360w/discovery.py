@@ -98,8 +98,8 @@ def connected_slots_sysfs(receiver: ReceiverInfo, sysfs_usb: Path = DEFAULT_SYSF
     """Slots where xpad has created an input device (meaning a controller is connected).
 
     xpad creates the input device on connect (`input_dev->dev.parent = &xpad->intf->dev`);
-    it appears as `<interface>/input/inputN`. Derived from the source code, not checked on the
-    device. During a short takeover (driver unbound) it is missing for a few seconds.
+    it appears as `<interface>/input/inputN` (confirmed on the device). During a short takeover (driver
+    unbound) it is missing for a few seconds.
     """
     slots: Set[int] = set()
     for interface in receiver.interfaces:
@@ -116,8 +116,8 @@ def connected_slots_sysfs(receiver: ReceiverInfo, sysfs_usb: Path = DEFAULT_SYSF
 def input_event_nodes(receiver: ReceiverInfo, slot: int, sysfs_usb: Path = DEFAULT_SYSFS_USB) -> List[str]:
     """Names like "event5" of the evdev nodes of the input device xpad created for the given slot.
 
-    Derived from the source code and the usual sysfs layout (`<interface>/input/inputN/eventM`), not
-    checked on the device. Empty if no controller is connected in that slot (or the layout differs).
+    Found under `<interface>/input/inputN/eventM` (confirmed on the device, the rumble test uses it). Empty
+    if no controller is connected in that slot.
     """
     nodes: List[str] = []
     for interface in receiver.interfaces:

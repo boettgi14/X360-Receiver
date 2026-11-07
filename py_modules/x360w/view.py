@@ -2,11 +2,11 @@
 
 Pure logic without input/output. A controller's presence comes from two sources:
   - "monitor": usbmon capture (confirmed on the device), only while the monitor is on;
-  - "sysfs": the input device xpad creates (derived from the source code, unchecked on the device).
+  - "sysfs": the input device xpad creates (confirmed on the device).
 In addition: A LED `xpadN` exists only while a controller is connected (confirmed on the device).
 If there are more LEDs than detected controllers, the rest goes into `unlocated_count`.
 
-LED assignment (as observed on the user's device: xpad0 = controller 1, xpad1 = controller 2 …):
+LED assignment (as observed on a device with one receiver: xpad0 = controller 1, xpad1 = controller 2 …):
 A receiver's LEDs are sorted by number and assigned to the controllers in slot order, provided
 their counts match. xpad and the receiver both hand out LED number and slot as "smallest free", so
 with one receiver they stay in step. With several receivers they share the LED numbers; then the

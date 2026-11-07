@@ -2,8 +2,8 @@
 
 Used by the "Turn off all controllers now" button (plugin) and by the service that runs on shutdown
 (`poweroff_cli`, see `poweroff_unit`). This module does not check whether the system is shutting
-down: Decky does not reliably stop the plugin on shutdown (observed on the device), which is why a
-separate systemd service takes over that job.
+down: the plugin cannot do this job itself while Decky shuts it down, which is why a separate systemd
+service takes over.
 
 Error texts are English and language-neutral (they end up in `last-run.json` and in the diagnostics).
 """
@@ -15,7 +15,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import actions
 
-# With the sequence proven on the device (discard 0.3 s, send, listen 0.6 s) each slot takes about 1 s.
+# With the sequence proven on hardware (discard 0.3 s, send, listen 0.6 s) each slot takes about 1 s.
 # The service may be killed after `TimeoutStopSec` (poweroff_unit); the limit stays below that.
 DEADLINE_S = 8.0
 RETRY_S = 0.2

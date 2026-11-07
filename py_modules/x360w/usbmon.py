@@ -4,7 +4,7 @@ Line format according to the kernel documentation (Documentation/usb/usbmon.rst)
   <urb-tag> <timestamp-us> <event S|C|E> <Xx:bus:dev:ep> <status[:interval]> <length> [= <data-hex-words>]
 
 Note: The text format shows only a limited start of the data. The receiver's packets are 28/29
-bytes long. Whether everything arrives was to be checked in phase 0 (it does: confirmed on hardware).
+bytes long and arrive complete (confirmed on hardware).
 """
 
 from __future__ import annotations

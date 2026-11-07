@@ -1,8 +1,7 @@
 // Render test for the frontend (dist/index.js) with stand-in Decky components and jsdom.
 // Checks layout, order of the groups, expanding, switches, backend calls and the texts in BOTH
 // languages (English and German, chosen through `navigator.languages` like in the Steam UI).
-// It is NOT a test against Steam's real UI: looks and focus navigation stay unchecked, and so does
-// the real value of `navigator.language` inside Steam (see src/i18n.ts).
+// It is NOT a test against Steam's real UI: looks and focus navigation are not covered.
 // Run in a folder with react, react-dom and jsdom installed (e.g. an empty directory,
 // `npm install react react-dom jsdom`):   node <path>/tools/frontend_render_test.mjs <path>/dist/index.js
 import { createRequire } from "node:module";
@@ -85,7 +84,7 @@ const base = () => ({
   led_modes: { 0: "off", 6: "position 1 on" },
   diagnostics: {
     verdict: { code: "run_ok", sent: 1, total: 1 },
-    lines: [{ key: "time", value: "2026-11-05 12:00:00" }, { key: "duration", value: "1.2 s" }, { key: "receivers", value: "1" }],
+    lines: [{ key: "time", value: "2000-01-01 12:00:00" }, { key: "duration", value: "1.2 s" }, { key: "receivers", value: "1" }],
   },
   receivers: [
     { usb_path: "1-3", label: "Xbox 360 Wireless Receiver (0719)", unofficial: false, bus: 1, devnum: 2, slot_count: 4, unlocated_count: 0, unassigned_leds: [],
@@ -104,7 +103,7 @@ const TEXT = {
     moreControllers: "1 more controller connected", ledsOfReceiver: "LEDs of this receiver", slotsInUse: "2 of 4 slots in use",
     unofficial: "(02A9) · unofficial", ledPattern: "LED pattern", mode6: "6: position 1 on",
     diagnostics: "Diagnostics", service: "Shutdown service", runOk: "1 of 1 controllers turned off",
-    time: "Time2026-11-05 12:00:00", duration: "Duration1.2 s", // label and value are separate elements
+    time: "Time2000-01-01 12:00:00", duration: "Duration1.2 s", // label and value are separate elements
     toggleShutdown: "Turn off on shutdown", toggleStandby: "Turn off on standby",
     noReceiver: "No Xbox 360 receiver found", standbyUnavailable: "Turn-off on standby unavailable",
     noController: "No controller connected", wheel: "Wheel", unknownType: "Unknown (0x1F)",
@@ -129,7 +128,7 @@ const TEXT = {
     moreControllers: "1 weiterer Controller verbunden", ledsOfReceiver: "LEDs dieses Receivers", slotsInUse: "2 von 4 Slots belegt",
     unofficial: "(02A9) · inoffiziell", ledPattern: "LED-Muster", mode6: "6: Position 1 an",
     diagnostics: "Diagnose", service: "Dienst beim Herunterfahren", runOk: "1 von 1 Controllern ausgeschaltet",
-    time: "Zeit2026-11-05 12:00:00", duration: "Dauer1.2 s",
+    time: "Zeit2000-01-01 12:00:00", duration: "Dauer1.2 s",
     toggleShutdown: "Beim Herunterfahren", toggleStandby: "Beim Standby",
     noReceiver: "Kein Xbox-360-Receiver gefunden", standbyUnavailable: "Standby-Ausschalten nicht verfügbar",
     noController: "Kein Controller verbunden", wheel: "Lenkrad", unknownType: "Unbekannt (0x1F)",

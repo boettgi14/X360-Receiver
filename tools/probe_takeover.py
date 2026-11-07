@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test tool (phase 0d): sends commands to ONE slot of the receiver and shows the replies.
+"""Test tool: sends commands to ONE slot of the receiver and shows the replies.
 
 Procedure: xpad releases the slot's interface, the tool sends, reads and releases it,
 after which xpad binds again. During that time (a few seconds) the slot delivers no input to

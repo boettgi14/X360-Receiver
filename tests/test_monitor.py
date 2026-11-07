@@ -19,7 +19,7 @@ from x360w import (  # noqa: E402
 )
 from x360w import controls  # noqa: E402
 
-FIXTURE = ROOT / "tests" / "fixtures" / "capture_connect_gamepad_2026-11-04.txt"
+FIXTURE = ROOT / "tests" / "fixtures" / "capture_connect.txt"
 LINES = FIXTURE.read_text(encoding="ascii").splitlines()
 
 

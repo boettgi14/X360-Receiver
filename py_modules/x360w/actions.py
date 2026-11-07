@@ -1,11 +1,11 @@
 """Actions with short access to one slot: query the battery, turn the controller off.
 
-Seen on hardware (2026-11-05, capture and terminal, one receiver 045E:0719, one gamepad):
+Confirmed on hardware (one receiver 045E:0719, one gamepad):
   - The battery request `00 00 00 40` is answered with a state packet within about 30 ms.
   - `00 00 08 C0` turns the controller off (state packet with power state 0, then disconnect).
   - `xpad` re-binds the interface after the access.
-Unknown: whether the battery request polls the controller afresh or the receiver answers from a
-cache (test: request while the controller is off).
+  - With the controller off the battery request gets no answer, so the receiver does not answer from a
+    cache. Whether the value changes as a battery drains is unverified.
 
 Cost: The slot's controller disappears from the system for a few seconds (Steam sees it leave
 and come back). Other slots are untouched.

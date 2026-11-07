@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 0: Reads usbmon text and shows only the receiver's packets, decoded.
+"""Reads usbmon text and shows only the receiver's packets, decoded.
 
 Privacy: usbmon sees the ENTIRE bus, including keyboards and mice on the same bus. This
 script filters strictly by bus and device address and outputs nothing else. Lines of other

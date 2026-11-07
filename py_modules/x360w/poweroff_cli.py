@@ -1,8 +1,7 @@
 """Program of the systemd service: turns off all connected controllers on shutdown.
 
-Runs as root inside the service (`poweroff_unit`), independent of Decky and of the plugin: Decky does
-not reliably stop the plugin on shutdown (observed on the device), but systemd does run the service's
-`ExecStop`.
+Runs as root inside the service (`poweroff_unit`), independent of Decky and of the plugin: the plugin
+cannot turn controllers off while Decky shuts it down, but systemd does run the service's `ExecStop`.
 
 It finds the targets itself (receivers through sysfs, occupied slots through sysfs and LEDs, without
 the usbmon monitor) and then sends the same turn-off command as the "Turn off all controllers now"

@@ -15,7 +15,11 @@ poweroff_on_shutdown, original_auto_poweroff (initial value, restored on removal
 
 "Turn off on shutdown" is handled by a separate systemd service (x360w.poweroff_unit) that the
 plugin creates when the option is switched on and deletes when it is switched off or the plugin is
-removed: Decky does not reliably stop the plugin on shutdown (observed on the device).
+removed: the plugin itself cannot turn controllers off while Decky is shutting it down.
+
+Shutting down: Decky waits 5 s after SIGTERM and then kills the plugin. Its own socket reader can starve
+the event loop while the plugin is being stopped (see x360w.loop_guard), so `_unload` and `_uninstall` never
+suspend, start no thread and use no executor, and two watchdogs end the process in time. See docs/DESIGN.md.
 """
 
 import asyncio
@@ -132,7 +136,7 @@ class Plugin:
     def _loop_starved(self) -> None:
         """Called by the loop guard's thread when the event loop made no progress for seconds.
 
-        Decky's own socket reader spins after Decky closes its end while stopping the plugin and starves the
+        Decky's socket reader spins after Decky closes its end while stopping the plugin and starves the
         loop (see x360w.loop_guard). Nothing can run on the loop then, not even Decky's SIGTERM handler, so
         the process ends itself before Decky's 5 s are over. There is nothing to save: settings are written
         when they change, and the usbmon readers are daemon threads.
@@ -254,12 +258,11 @@ class Plugin:
     def _arm_exit_watchdog(self) -> None:
         """Makes sure the process ends before Decky's 5 s limit, whatever keeps it alive.
 
-        Decky waits 5 s after SIGTERM and then sends SIGKILL. On the device that happened on every stop of
-        the plugin, also on a plain reload, and the cause is NOT known (it could not be reproduced with a
-        copy of Decky's stop sequence). So this does not depend on the cause: `faulthandler` runs its own
-        C-level thread, which, after `EXIT_WATCHDOG_S`, writes the stack of every thread to the log (the journal
-        then shows what is stuck) and ends the process with `_exit`. If the plugin ends in time on its own,
-        the process is gone and the watchdog with it.
+        Decky waits 5 s after SIGTERM and then sends SIGKILL. This is the last resort behind the steps that
+        never suspend (see `_unload`) and the loop guard: `faulthandler` runs its own C-level thread, which,
+        after `EXIT_WATCHDOG_S`, writes the stack of every thread to the log (so the journal shows what is
+        stuck) and ends the process with `_exit`. If the plugin ends in time on its own, the process is gone
+        and the watchdog with it.
         """
         for stream in (sys.stderr, sys.stdout, getattr(sys, "__stderr__", None)):
             try:
@@ -274,9 +277,9 @@ class Plugin:
     def _step(name: str, function) -> bool:
         """Runs one shutdown step directly (no thread, no executor) and logs its time. Never raises.
 
-        Every earlier version that started a thread or used `asyncio.to_thread` here stopped logging at exactly
-        that point on the device (journal of 2026-11-07), so the shutdown path starts no thread at all. A slow
-        step is cut short by the exit watchdog, not by a thread.
+        The shutdown path starts no thread and uses no executor: a thread start or an executor call is a
+        point where the starved event loop would never come back (see x360w.loop_guard). A slow step is cut
+        short by the exit watchdog.
         """
         started = time.monotonic()
         try:
@@ -326,9 +329,6 @@ class Plugin:
         self._step("remove service", poweroff_unit.uninstall)
 
     # -- Queries ------------------------------------------------------------
-
-    async def get_receivers(self) -> list:
-        return [r.to_dict() for r in await asyncio.to_thread(self.service.refresh)]
 
     def _views(self, receivers) -> list:
         owners = controls.led_owners()

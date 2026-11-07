@@ -1,9 +1,8 @@
-"""Tests against the capture of 2026-11-05 (same receiver, one gamepad, about 393 s).
+"""Tests against a capture of the idle time after connecting (same receiver, one gamepad, about 393 s).
 
 Sequence in the capture: controller off and on again (at 6.4 s / 13.1 s), then about 380 s without
-any operation except a single input at 73.5 s. grep buffered the file and it was cut off at
-12288 bytes; the last incomplete line is missing. The planned LED test, holding the Guide button
-for 5 seconds and the button presses are NOT in it.
+any operation except a single input at 73.5 s. There are no LED commands, no Guide hold and no button
+presses in it (those are in the other captures).
 """
 
 import sys
@@ -25,7 +24,7 @@ from x360w import (  # noqa: E402
     parse_usbmon_line,
 )
 
-FIXTURE = ROOT / "tests" / "fixtures" / "capture_idle_gamepad_2026-11-05.txt"
+FIXTURE = ROOT / "tests" / "fixtures" / "capture_idle.txt"
 
 
 class IdleCaptureTests(unittest.TestCase):

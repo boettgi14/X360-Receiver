@@ -1,6 +1,6 @@
-"""Tests against a real capture (Bazzite, receiver 045e:0719, one gamepad).
+"""Tests against a real capture of connecting (Bazzite, receiver 045e:0719, one gamepad).
 
-Recorded on 2026-11-04 through usbmon, filtered to the receiver. Contains:
+Recorded through usbmon, filtered to the receiver. Contains:
 disconnecting, reconnecting, link report, state packet and button presses.
 Not contained: Guide button, Start/Back, turning off, battery change.
 """
@@ -23,7 +23,7 @@ from x360w import (  # noqa: E402
     parse_usbmon_line,
 )
 
-FIXTURE = ROOT / "tests" / "fixtures" / "capture_connect_gamepad_2026-11-04.txt"
+FIXTURE = ROOT / "tests" / "fixtures" / "capture_connect.txt"
 
 
 def load():

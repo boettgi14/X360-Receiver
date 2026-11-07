@@ -1,11 +1,11 @@
 """Ends the process when the asyncio event loop is starved, so Decky does not have to kill it.
 
-Why: Decky's plugin process reads its socket in a loop (`_listen_for_method_call`, Decky source read
-2026-11-07). When Decky closes its end of the socket while stopping the plugin, that loop gets an empty read
-every time, does not stop, creates a task per iteration and never gives the event loop a chance to run. The
-journal of the user's device shows exactly this: the main thread stuck in `asyncio.create_task`, SIGTERM never
-handled on a plain reload, and `_unload` stopping at its first real `await`. The plugin then stays alive until
-Decky sends SIGKILL after 5 s.
+Why: Decky's plugin process reads its socket in a loop (`_listen_for_method_call` in Decky's
+`localplatform/localsocket.py`). When Decky closes its end of the socket while stopping the plugin, that loop
+gets an empty read every time, does not stop, creates a task per iteration and never gives the event loop a
+chance to run. Seen on a device: the main thread stuck in `asyncio.create_task`, SIGTERM never handled on a
+plain reload, and `_unload` stopping at its first real `await`. The plugin then stays alive until Decky sends
+SIGKILL after 5 s. Other plugins whose `_unload` has no suspension point are not affected.
 
 What this does: the loop updates a heartbeat every `interval_s`; a daemon thread (not an asyncio thing, so it
 keeps running while the loop is starved) watches it. If the heartbeat is older than `stale_s` and still has not

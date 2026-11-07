@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Phase 0: Read-only. Collects information about the receiver, xpad, LEDs, battery interfaces
+# Read-only. Collects information about the receiver, xpad, LEDs, battery interfaces
 # and usbmon availability. Changes nothing on the system.
 #
 # Usage (desktop mode, terminal):  bash tools/discover.sh | tee discover.txt

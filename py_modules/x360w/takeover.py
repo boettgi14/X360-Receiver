@@ -5,9 +5,9 @@ releases it), commands are sent and replies read, then libusb releases the inter
 `xpad` (`libusb_set_auto_detach_kernel_driver`). During this time (seconds) this slot delivers no
 input to Steam. Other slots are not affected.
 
-STATUS: Confirmed on hardware with `tools/probe_takeover.py` (2026-11-05, one receiver, one gamepad):
-detaching xpad, sending, reading, releasing and re-binding xpad all work. Not yet tried inside the
-Decky process (`x360w.actions`). The logic is additionally tested with a dummy backend.
+Confirmed on hardware, with `tools/probe_takeover.py` and inside the Decky process (one receiver, one
+gamepad): detaching xpad, sending, reading, releasing and re-binding xpad all work. The logic is
+additionally tested with a dummy backend.
 
 Writes only to endpoints of the chosen slot and only commands from x360w.protocol.
 """

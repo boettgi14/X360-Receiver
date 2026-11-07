@@ -12,9 +12,9 @@ Safety and privacy:
   - Strength and duration are fixed constants; the duration is capped at `MAX_DURATION_S`.
   - The effect is always removed again, also on errors, and the descriptor is always closed.
 
-STATUS: Derived from the kernel's uapi (`linux/input.h`, `struct ff_effect`, `EVIOCSFF`/`EVIOCRMFF`);
-the structure layout and ioctl numbers are checked against the known x86-64 values in the unit tests.
-NOT tried on a real controller yet. Whether Steam Input being active changes anything is unknown.
+Confirmed on hardware: the controller vibrates. The structure layout and ioctl numbers follow the kernel's
+uapi (`linux/input.h`, `struct ff_effect`, `EVIOCSFF`/`EVIOCRMFF`) and are checked against the known x86-64
+values in the unit tests. Whether Steam Input being active changes anything is unknown.
 """
 
 from __future__ import annotations

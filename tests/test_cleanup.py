@@ -24,7 +24,7 @@ class RestoreAutoPoweroffTests(unittest.TestCase):
         self.assertEqual(written, [])
 
     def test_the_plugin_has_no_code_that_deletes_folders_as_root(self):
-        # Decision of the user: the settings/data/log folders are left alone. Keep it that way.
+        # The settings/data/log folders are deliberately left alone (see the README). Keep it that way.
         self.assertFalse(hasattr(cleanup, "remove_plugin_dir"))
         self.assertNotIn("rmtree", (ROOT / "main.py").read_text(encoding="utf-8"))
 

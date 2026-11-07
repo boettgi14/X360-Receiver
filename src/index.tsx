@@ -1,9 +1,10 @@
 // Decky frontend. Layout from top to bottom:
 //   General (groups: Monitoring, Power) → one section per receiver → in it the connected
 //   controllers as expandable cards → in them groups (Battery, Power, LED, Details).
-// Every subgroup has a heading and an indented line on the left, so it is clear what a setting
-// belongs to. All texts come from `i18n.ts` (English and German, following the Steam UI language).
-// Never rendered on a device yet; it is only built and type-checked in a test copy.
+// Every subgroup has a heading and an indented line on the left, so it is clear what a setting belongs
+// to; the expanded card itself only indents. All texts come from `i18n.ts` (English and German,
+// following the Steam UI language).
+// The panel shows no progress or success messages, only failures; the low-battery notices are toasts.
 import {
   ButtonItem,
   ConfirmModal,
@@ -371,7 +372,7 @@ function Content() {
         </PanelSectionRow>
 
         {isOpen && (
-          <div style={{ borderLeft: `3px solid ${LINE}`, margin: "0 0 10px 14px", paddingLeft: 6 }}>
+          <div style={{ margin: "0 0 10px 14px" }}>
             <Group title={t.groupBattery} icon={<FaSyncAlt />}>
               <PanelSectionRow>
                 <Field label={t.lastReport} description={freshNote} bottomSeparator="none" childrenLayout="inline">

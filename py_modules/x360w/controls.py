@@ -59,7 +59,7 @@ def led_owner(name: str, base: Optional[Path] = None) -> Optional[str]:
 
     xpad registers the LED on the receiver's USB device (`led_classdev_register(&xpad->udev->dev …)`),
     so the resolved path ends in `<usb_path>/leds/<name>`. This does not tie a LED to a single slot.
-    Derived from the source code, not checked on the device.
+    Confirmed on a device with one receiver.
     """
     if not isinstance(name, str) or not LED_NAME_RE.fullmatch(name):
         return None

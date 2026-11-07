@@ -1,11 +1,11 @@
 """Undoing what the plugin changed, when it is removed (Decky calls `_uninstall`).
 
-Only the kernel parameter `auto_poweroff` is restored here. The plugin does not delete its settings, data
-and log folders under DECKY_HOME (decision of the user): Decky leaves them behind and they can be removed by
-hand. The systemd service is removed by `poweroff_unit.uninstall`.
+Only the kernel parameter `auto_poweroff` is restored here. The plugin deliberately does not delete its
+settings, data and log folders under DECKY_HOME: Decky leaves them behind and they can be removed by hand
+(see README). The systemd service is removed by `poweroff_unit.uninstall`.
 
-Decky also calls `_uninstall` when the same plugin is installed again (update from a ZIP). Saved settings are
-not deleted in that case any more; they are read again by the new version.
+Decky also calls `_uninstall` when the same plugin is installed again (update from a ZIP). The saved settings
+stay in that case and are read again by the new version.
 """
 
 from __future__ import annotations

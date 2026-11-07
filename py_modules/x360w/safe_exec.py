@@ -6,9 +6,6 @@ itself therefore starts its child processes with an empty environment (`env={}`)
 Here: an absolute path from a fixed search path and an environment with only PATH and LANG.
 `LANG=C` and `LC_ALL=C` also make the output of external programs independent of the system language,
 so the plugin behaves the same on a German and an English system.
-
-Whether exactly this was the problem with `systemctl` inside the plugin is not proven on the
-device; it is the most likely cause I could find in the source code.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Tests against the capture of 2026-11-05 with LED commands, buttons, re-binding and turning off.
+"""Tests against a capture with LED commands, buttons, re-binding and turning off.
 
 Sequence (seconds since the start): idle; LED command 10 at 114.3 s and 2 at 132.4 s; A, B, Guide
 tapped at 137.7 / 139.2 / 140.2 s; xpad unbound at 201.7 s and bound at 213.3 s; Guide held
@@ -25,7 +25,7 @@ from x360w import (  # noqa: E402
     parse_usbmon_line,
 )
 
-FIXTURE = ROOT / "tests" / "fixtures" / "capture_events_gamepad_2026-11-05.txt"
+FIXTURE = ROOT / "tests" / "fixtures" / "capture_events.txt"
 SPAN = 246.711
 
 

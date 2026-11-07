@@ -1,9 +1,9 @@
 // Texts of the plugin UI in English and German.
 //
 // The UI follows the language of the Steam client (SteamOS and Bazzite alike), the way Decky Loader's
-// own UI does: it reads `navigator.language` (Decky: i18next with `lng: navigator.language`, source read
-// 2026-11-06; not verified on a device yet). German is used for "de", "de-DE", ...; everything else
-// falls back to English.
+// own UI does: it reads `navigator.language` (Decky uses i18next with `lng: navigator.language`; confirmed
+// on a device for German and English). German is used for "de", "de-DE", ...; everything else falls back
+// to English. The user can override the result in the settings.
 //
 // The Python backend is language-neutral. It returns English technical messages plus, where a user
 // can act on a failure, a stable `code` (and `detail`) that is translated here (see `errorText`), and

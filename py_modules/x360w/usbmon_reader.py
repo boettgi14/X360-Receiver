@@ -4,8 +4,7 @@ Privacy: usbmon delivers the entire bus. Each line is first checked, as plain by
 address marker ":<bus>:<device>:" of the watched receivers. Lines of other devices are discarded
 before they are decoded and are never stored or logged.
 
-Not tested on real hardware: non-blocking reading with select() on the usbmon file.
-Fallback if that does not work: a blocking read() in this thread.
+Reading is non-blocking, with select() on the usbmon file (works on hardware).
 """
 
 from __future__ import annotations
@@ -32,8 +31,7 @@ def ensure_usbmon(
     """Loads the usbmon kernel module if the interface is missing. Returns an error message or None.
 
     Fixed call without user input: `modprobe usbmon`. Not persistent; after a reboot the plugin
-    loads the module again when the monitor is switched on. Confirmed by hand on the device
-    (`sudo modprobe usbmon` works); the call from inside the plugin is untested.
+    loads the module again when the monitor is switched on. Works from inside the plugin.
     The messages are English and language-neutral; the frontend shows them as technical details.
     """
     if os.path.exists(template.format(bus=1)):

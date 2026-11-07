@@ -7,7 +7,7 @@ Sources (see docs/PROTOCOL.md for details and confidence levels):
 
 Everything in this module works on raw bytes. There is no USB access.
 The bit-field order (LSB first) is an assumption from the source's C struct
-and has to be confirmed on real hardware (phase 0 in PLAN.md).
+and is only partly confirmed on hardware (see docs/PROTOCOL.md).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ class BatteryLevel(IntEnum):
 
 
 # XInput subtypes according to the Microsoft documentation (XINPUT_CAPABILITIES.SubType).
-# NOT checked against the documentation in this session, hence a hypothesis.
+# Unverified: taken from the XInput documentation without a check (see docs/PROTOCOL.md).
 # The names are English; the frontend shows translated names keyed by subtype number.
 SUBTYPE_NAMES = {
     0x01: "Gamepad",
@@ -79,7 +79,7 @@ class InputReport:
     right_stick_x: int
     right_stick_y: int
     # The two header data bytes can also carry a state in input packets
-    # (seen on the device: first packet after connecting, header 13 A2).
+    # (seen on hardware: first packet after connecting, header 13 A2).
     state: Optional["StateReport"] = None
 
 
@@ -223,7 +223,7 @@ def decode_in_packet(data: bytes) -> Optional[Report]:
 
 # ---------------------------------------------------------------------------
 # Output commands (OUT endpoint of the respective slot), 12 bytes each.
-# Sending requires exclusive USB access or a kernel patch, see PLAN.md.
+# Sending requires exclusive USB access, see docs/DESIGN.md.
 # ---------------------------------------------------------------------------
 
 

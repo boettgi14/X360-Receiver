@@ -838,7 +838,7 @@ class UninstallTests(unittest.TestCase):
             await plugin._uninstall()
             self.assertEqual(param.read_text().strip(), "Y")
             self.assertEqual(main.fake_unit.calls, [("uninstall",)])
-            for d in dirs.values():  # the plugin never deletes these (decision of the user)
+            for d in dirs.values():  # the plugin never deletes these
                 self.assertTrue((d / "file").exists(), d)
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -881,8 +881,8 @@ class UninstallTests(unittest.TestCase):
             asyncio.run(scenario(tmp))
 
     def test_the_shutdown_path_starts_no_thread_and_uses_no_executor(self):
-        # On the device the shutdown stopped logging at the first thread start / executor call, every time (journal
-        # of 2026-11-07). Whatever the cause, `_unload` and `_uninstall` must not depend on either.
+        # A thread start or an executor call is a point where a starved event loop (see x360w.loop_guard) would
+        # never come back, so `_unload` and `_uninstall` must not depend on either.
         async def scenario(tmp):
             home, dirs, param = self._setup(tmp)
             main = self._load(home, dirs)

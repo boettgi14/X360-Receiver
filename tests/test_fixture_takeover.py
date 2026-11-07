@@ -1,7 +1,7 @@
-"""Tests against the capture of 2026-11-05 made with tools/probe_takeover.py (phase 0d).
+"""Tests against a capture made with tools/probe_takeover.py.
 
 Sequence (seconds since the start, controller in slot 1 on): presence request at 41.3 s,
-battery request at 64.0 s, turn-off at 85.4 s, after which the user switches the controller back
+battery request at 64.0 s, turn-off at 85.4 s, after which the controller is switched back
 on by hand at about 105.4 s. Each time xpad releases the interface (URB status -108) and
 binds it again after about 2 s (its own presence request plus LED command).
 """
@@ -26,7 +26,7 @@ from x360w import (  # noqa: E402
     parse_usbmon_line,
 )
 
-FIXTURE = ROOT / "tests" / "fixtures" / "capture_takeover_gamepad_2026-11-05.txt"
+FIXTURE = ROOT / "tests" / "fixtures" / "capture_takeover.txt"
 
 
 class TakeoverCaptureTests(unittest.TestCase):

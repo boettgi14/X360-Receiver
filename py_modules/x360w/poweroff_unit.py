@@ -1,9 +1,8 @@
 """Setting up and removing the systemd service "turn off controllers on shutdown".
 
-Why: Decky does not reliably stop the plugin on shutdown (observed on the device: the plugin
-received the stop signal, never called `_unload` and was killed with SIGKILL after 5 s; two other
-plugins behaved the same). A systemd service runs independently of that: `ExecStop` runs on
-shutdown and reboot while USB is still there.
+Why: while the system shuts down, Decky stops the plugin too late and too unreliably to turn controllers
+off from inside it. A systemd service runs independently of that: `ExecStop` runs on shutdown and reboot
+while USB is still there.
 
 What gets created (only on explicit request, when the option "Turn off on shutdown" is switched on,
 and deleted again when the option is switched off and when the plugin is removed):
@@ -17,8 +16,8 @@ External calls (fixed, no user input, through `safe_exec.run_fixed`): `systemctl
 Security: The program runs as root. Directory and files therefore belong to root and are writable
 only by root; symlinks at the target locations are rejected.
 
-Confirmed on the device (user, 2026-11-05): The service runs on Bazzite and turns the controllers
-off on shutdown. Not specifically tested: reboot and several controllers.
+Confirmed on hardware (Bazzite): the service turns several controllers off on shutdown and on reboot, a
+few seconds after the power button is pressed and shortly before the device is off.
 """
 
 from __future__ import annotations
