@@ -85,6 +85,47 @@ class RemovePluginDirTests(unittest.TestCase):
         self.assertTrue(self.remove(link / "settings" / "P", home=link))
 
 
+class RefusalReasonTests(unittest.TestCase):
+    """The reason is what ends up in the log when a folder is not deleted."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.home = Path(self._tmp.name).resolve() / "homebrew"
+        (self.home / "settings" / "P").mkdir(parents=True)
+
+    def reason(self, path, home=None):
+        return cleanup.refusal_reason(None if path is None else str(path), str(home or self.home))
+
+    def test_allowed_folder_has_no_reason(self):
+        self.assertIsNone(self.reason(self.home / "settings" / "P"))
+
+    def test_each_refusal_names_its_cause(self):
+        (self.home / "other" / "P").mkdir(parents=True)
+        self.assertIn("missing", self.reason(None))
+        self.assertIn("missing", cleanup.refusal_reason(str(self.home / "settings" / "P"), None))
+        self.assertIn("not absolute", self.reason("relative/path"))
+        self.assertIn("not exactly", self.reason(self.home / "other" / "P"))
+        self.assertIn("not exactly", self.reason(self.home / "settings" / "P" / "deep"))
+        self.assertIn("not exactly", self.reason(Path("/etc")))
+        self.assertIn("does not exist", self.reason(self.home / "settings" / "missing"))
+
+    def test_symlinks_and_a_path_that_resolves_elsewhere_are_explained(self):
+        target = Path(self._tmp.name).resolve() / "elsewhere"
+        (target / "P").mkdir(parents=True)
+        os.symlink(target / "P", self.home / "settings" / "L")
+        self.assertIn("symlink", self.reason(self.home / "settings" / "L"))
+        os.symlink(target, self.home / "logs")  # the kind folder itself is a symlink
+        self.assertIn("resolves to", self.reason(self.home / "logs" / "P"))
+
+    def test_remove_plugin_dir_agrees_with_the_reason(self):
+        calls = []
+        path = self.home / "settings" / "P"
+        self.assertTrue(cleanup.remove_plugin_dir(str(path), str(self.home), rmtree=calls.append))
+        self.assertFalse(cleanup.remove_plugin_dir(str(self.home), str(self.home), rmtree=calls.append))
+        self.assertEqual(calls, [str(path)])
+
+
 class RestoreAutoPoweroffTests(unittest.TestCase):
     def test_restores_when_different(self):
         written = []

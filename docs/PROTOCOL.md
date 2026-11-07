@@ -165,6 +165,7 @@ Only terminal output of `tools/probe_takeover.py --battery-request`, no usbmon c
 - First run: request sent, **0 packets** back.
 - Second run: state packet `00 00 00 13 A2` after 0.02 s (level 2, type 1, power state 2), then an empty packet.
 - If the assumption holds, the receiver does **not answer from a cache**: with the controller off no state packet comes, with it on one does. That suggests the controller is polled on the request. It is still no proof of a changing value; that was level 2 for all queries.
+- User report (2026-11-07, not a capture): with the controller off the battery request does not work (no answer). That agrees with the assumed order of the two runs and with the "no cache" reading.
 - Battery according to the user: **2 AA NiMH**. Belonging to it: battery type raw 1. Other values (pack, mains) unobserved. With NiMH the voltage curve is flat; the protocol's four levels are therefore coarse.
 
 System structure, confirmed: The receiver is called `1-3` in sysfs, `xpad` is bound to `1-3:1.0`, `1-3:1.2`, `1-3:1.4`, `1-3:1.6` (interfaces 1, 3, 5, 7 are audio and unbound). Besides that there is `1-4` (another device) and the root hubs `N-0:1.0`.

@@ -57,6 +57,22 @@ class MonitorService:
             reader.join(timeout=2.0)
         self.monitor.set_watched([])
 
+    def restart_readers(self) -> None:
+        """Stops all readers and starts fresh ones (used after a resume from suspend).
+
+        Stopping and the start of the new readers happen under the lock, so no old and new reader of the
+        same bus feed the monitor at the same time. The monitor's slot states are kept.
+        """
+        with self._lock:
+            readers = list(self._readers.values())
+            self._readers.clear()
+            self._retry_at.clear()
+            for reader in readers:
+                reader.stop()
+            for reader in readers:
+                reader.join(timeout=2.0)
+        self.refresh()
+
     def refresh(self) -> List[ReceiverInfo]:
         receivers = self._find()
         with self._lock:

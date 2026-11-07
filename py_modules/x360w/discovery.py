@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set
@@ -16,6 +17,7 @@ RECEIVER_IDS = {
 UNOFFICIAL_IDS = {(0x045E, 0x02A9)}
 
 DEFAULT_SYSFS_USB = Path("/sys/bus/usb/devices")
+EVENT_NODE_RE = re.compile(r"event[0-9]{1,4}")
 
 
 @dataclass
@@ -109,6 +111,26 @@ def connected_slots_sysfs(receiver: ReceiverInfo, sysfs_usb: Path = DEFAULT_SYSF
         except OSError:
             continue
     return slots
+
+
+def input_event_nodes(receiver: ReceiverInfo, slot: int, sysfs_usb: Path = DEFAULT_SYSFS_USB) -> List[str]:
+    """Names like "event5" of the evdev nodes of the input device xpad created for the given slot.
+
+    Derived from the source code and the usual sysfs layout (`<interface>/input/inputN/eventM`), not
+    checked on the device. Empty if no controller is connected in that slot (or the layout differs).
+    """
+    nodes: List[str] = []
+    for interface in receiver.interfaces:
+        if interface.role != "controller" or interface.slot != slot:
+            continue
+        try:
+            for input_dir in (sysfs_usb / interface.name / "input").iterdir():
+                if not input_dir.name.startswith("input"):
+                    continue
+                nodes.extend(child.name for child in input_dir.iterdir() if EVENT_NODE_RE.fullmatch(child.name))
+        except OSError:
+            continue
+    return sorted(nodes, key=lambda name: int(name[5:]))
 
 
 def find_receivers(sysfs_usb: Path = DEFAULT_SYSFS_USB) -> List[ReceiverInfo]:

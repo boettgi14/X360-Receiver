@@ -14,6 +14,7 @@ LIBUSB_UNAVAILABLE = "libusb_unavailable"  # libusb cannot be loaded in the plug
 UNIT_SETUP_FAILED = "unit_setup_failed"  # setting up the shutdown service failed; detail = reason
 UNIT_REMOVAL_FAILED = "unit_removal_failed"  # removing the shutdown service failed; detail = reasons
 SETTINGS_NOT_SAVED = "settings_not_saved"  # the settings file could not be written; detail = reason
+RUMBLE_UNAVAILABLE = "rumble_unavailable"  # no usable input device for the rumble test; detail = reason
 
 ALL = (
     BUSY,
@@ -23,4 +24,5 @@ ALL = (
     UNIT_SETUP_FAILED,
     UNIT_REMOVAL_FAILED,
     SETTINGS_NOT_SAVED,
+    RUMBLE_UNAVAILABLE,
 )

@@ -15,21 +15,24 @@ import {
   showModal,
   staticClasses,
 } from "@decky/ui";
-import { callable, definePlugin } from "@decky/api";
+import { callable, definePlugin, toaster } from "@decky/api";
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   FaChevronDown,
   FaEye,
   FaGamepad,
+  FaLanguage,
   FaLightbulb,
   FaMoon,
   FaPowerOff,
+  FaSearch,
   FaStethoscope,
   FaSyncAlt,
   FaUsb,
 } from "react-icons/fa";
 import {
   FailureLike,
+  LowBatteryNotice,
   MESSAGES,
   Messages,
   Verdict,
@@ -37,6 +40,7 @@ import {
   errorText,
   formatAge,
   ledModeName,
+  resolveLanguage,
   subtypeName,
   verdictText,
 } from "./i18n";
@@ -75,6 +79,9 @@ interface Status {
     monitor_enabled: boolean;
     auto_poweroff: boolean | null;
     poweroff_on_shutdown: boolean;
+    startup_query: boolean;
+    low_battery_toast: boolean;
+    language: string;
   };
   monitor: { enabled: boolean; setup_error: string | null; readers: Record<string, { error: string | null }> };
   receivers: Receiver[];
@@ -105,6 +112,11 @@ const getStatus = callable<[], Status>("get_status");
 const setMonitorEnabled = callable<[enabled: boolean], Result>("set_monitor_enabled");
 const setAutoPoweroff = callable<[enabled: boolean], Result>("set_auto_poweroff");
 const setPoweroffOnShutdown = callable<[enabled: boolean], Result>("set_poweroff_on_shutdown");
+const setStartupQuery = callable<[enabled: boolean], Result>("set_startup_query");
+const setLowBatteryToast = callable<[enabled: boolean], Result>("set_low_battery_toast");
+const setLanguage = callable<[language: string], Result>("set_language");
+const takeLowBatteryNotices = callable<[], LowBatteryNotice[]>("take_low_battery_notices");
+const findController = callable<[bus: number, devnum: number, slot: number], Result>("find_controller");
 const powerOffAll = callable<[], PowerOffAllResult>("power_off_all");
 const setLed = callable<[name: string, mode: number], Result>("set_led");
 const resetLed = callable<[name: string], Result>("reset_led");
@@ -212,7 +224,8 @@ function Content() {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<boolean>(false);
-  const lang = useMemo(() => detectLanguage(), []);
+  const detected = useMemo(() => detectLanguage(), []);
+  const lang = resolveLanguage(status?.settings.language, detected); // the user's choice wins over Steam's language
   const t = MESSAGES[lang];
 
   const refresh = useCallback(async () => {
@@ -253,6 +266,13 @@ function Content() {
       if (!result.ok) sayFailure(result);
       else if (!result.state) say(t.noResponse(slot + 1), true);
       else say(t.batteryQueried(slot + 1, levelText(t, result.state.battery_level)));
+    });
+
+  const runFind = (bus: number, devnum: number, slot: number) =>
+    guarded(async () => {
+      const result = await findController(bus, devnum, slot);
+      if (!result.ok) sayFailure(result);
+      else say(t.foundController(slot + 1));
     });
 
   const confirmPowerOff = (bus: number, devnum: number, slot: number) =>
@@ -381,6 +401,19 @@ function Content() {
               </PanelSectionRow>
             </Group>
 
+            <Group title={t.groupIdentify} icon={<FaSearch />}>
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  disabled={busy}
+                  description={t.findControllerHint}
+                  onClick={() => runFind(bus, devnum, c.slot)}
+                >
+                  {t.findController}
+                </ButtonItem>
+              </PanelSectionRow>
+            </Group>
+
             {c.led !== null && (
               <Group title={t.groupLed} icon={<FaLightbulb />}>
                 {ledControls(c.led, c.last_led_mode)}
@@ -479,6 +512,28 @@ function Content() {
               }}
             />
           </PanelSectionRow>
+          <PanelSectionRow>
+            <ToggleField
+              label={t.startupQueryToggle}
+              description={t.startupQueryHint}
+              checked={status.settings.startup_query}
+              onChange={async (value: boolean) => {
+                report(await setStartupQuery(value));
+                refresh();
+              }}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ToggleField
+              label={t.lowBatteryToggle}
+              description={t.lowBatteryHint}
+              checked={status.settings.low_battery_toast}
+              onChange={async (value: boolean) => {
+                report(await setLowBatteryToast(value));
+                refresh();
+              }}
+            />
+          </PanelSectionRow>
           {status.monitor.setup_error && (
             <PanelSectionRow>
               <Field label={t.monitorCannotStart} description={status.monitor.setup_error} bottomSeparator="none" />
@@ -527,6 +582,25 @@ function Content() {
           </PanelSectionRow>
         </Group>
 
+        <Group title={t.groupLanguage} icon={<FaLanguage />}>
+          <PanelSectionRow>
+            <DropdownItem
+              label={t.languageSetting}
+              description={t.languageHint}
+              rgOptions={[
+                { data: "auto", label: t.languageAuto },
+                { data: "en", label: t.languageEnglish },
+                { data: "de", label: t.languageGerman },
+              ]}
+              selectedOption={status.settings.language}
+              onChange={async (option: { data: string }) => {
+                report(await setLanguage(option.data));
+                refresh();
+              }}
+            />
+          </PanelSectionRow>
+        </Group>
+
         {status.diagnostics !== null && (
           <Group title={t.groupDiagnostics} icon={<FaStethoscope />}>
             <PanelSectionRow>
@@ -566,10 +640,34 @@ function Content() {
   );
 }
 
-export default definePlugin(() => ({
-  name: "X360 Receiver",
-  titleView: <div className={staticClasses.Title}>X360 Receiver</div>,
-  content: <Content />,
-  icon: <FaGamepad />,
-  onDismount() {},
-}));
+/** Low-battery notices are pulled from the backend and shown as toasts, also while the panel is closed. */
+export default definePlugin(() => {
+  const showNotices = async () => {
+    try {
+      const notices = await takeLowBatteryNotices();
+      if (!Array.isArray(notices)) return;
+      for (const notice of notices) {
+        const t = MESSAGES[resolveLanguage(notice.language, detectLanguage())];
+        toaster.toast({
+          title: t.lowBatteryTitle,
+          body: t.lowBatteryBody(notice.slot + 1, notice.level),
+          icon: <FaGamepad />,
+        });
+      }
+    } catch {
+      // The backend may not be ready yet; the next poll tries again.
+    }
+  };
+  const firstPoll = setTimeout(showNotices, 3000);
+  const timer = setInterval(showNotices, 10000);
+  return {
+    name: "X360 Receiver",
+    titleView: <div className={staticClasses.Title}>X360 Receiver</div>,
+    content: <Content />,
+    icon: <FaGamepad />,
+    onDismount() {
+      clearTimeout(firstPoll);
+      clearInterval(timer);
+    },
+  };
+});

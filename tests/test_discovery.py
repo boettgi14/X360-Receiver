@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "py_modules"))
 
-from x360w.discovery import find_receivers  # noqa: E402
+from x360w.discovery import find_receivers, input_event_nodes  # noqa: E402
 
 
 def write(path: Path, text: str) -> None:
@@ -68,6 +68,22 @@ class DiscoveryTests(unittest.TestCase):
                          {"1-2": False, "1-3": False, "1-5": True})
         self.assertIs(receivers["1-5"].to_dict()["unofficial"], True)
         self.assertTrue(all(r.label.isascii() for r in receivers.values()))
+
+    def test_input_event_nodes_of_a_slot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_receiver(root, "1-2", "0719", bus=1, devnum=4)
+            [receiver] = find_receivers(root)
+            # slot 0 (interface :1.0) has an input device with two event nodes and other children
+            for name in ("event7", "event10", "js0", "power", "subsystem"):
+                (root / "1-2:1.0" / "input" / "input42" / name).mkdir(parents=True)
+            (root / "1-2:1.0" / "input" / "not-an-input").mkdir()
+            (root / "1-2:1.2" / "input" / "input43" / "event9").mkdir(parents=True)  # slot 1
+            (root / "1-2:1.3" / "input" / "input44" / "event11").mkdir(parents=True)  # an audio interface
+            self.assertEqual(input_event_nodes(receiver, 0, root), ["event7", "event10"])  # numeric order
+            self.assertEqual(input_event_nodes(receiver, 1, root), ["event9"])
+            self.assertEqual(input_event_nodes(receiver, 2, root), [])  # no controller in slot 2
+            self.assertEqual(input_event_nodes(receiver, 9, root), [])
 
     def test_missing_sysfs(self):
         self.assertEqual(find_receivers(Path("/nonexistent/sysfs")), [])

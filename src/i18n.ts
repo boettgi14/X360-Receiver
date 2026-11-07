@@ -29,6 +29,30 @@ const en = {
   backendUnreachable: (detail: string) => `Backend unreachable: ${detail}`,
   dismissHint: "Select to dismiss",
 
+  // ---- language setting
+  groupLanguage: "Language",
+  languageSetting: "Language",
+  languageHint: "Automatic follows the Steam language.",
+  languageAuto: "Automatic (Steam language)",
+  languageEnglish: "English",
+  languageGerman: "Deutsch",
+
+  // ---- battery options and the low-battery notification
+  startupQueryToggle: "Query battery at start",
+  startupQueryHint:
+    "When the plugin starts, each connected controller is queried once and disappears for about 3 seconds. Without this, a controller that was already connected shows no battery level until you query it.",
+  lowBatteryToggle: "Warn when battery is low",
+  lowBatteryHint:
+    "Shows a notification when a controller reports battery level 0 or 1 of 3. The receiver only reports the level when a controller connects or when it is queried, so the warning appears at those moments. Assumes that 0 means empty and 1 means low (not verified on a device).",
+  lowBatteryTitle: "Controller battery low",
+  lowBatteryBody: (n: number, level: number) => `Controller ${n}: battery level ${level}/3`,
+
+  // ---- find controller
+  groupIdentify: "Identify",
+  findController: "Find controller",
+  findControllerHint: "Vibrates the controller for about a second and blinks its LED once.",
+  foundController: (n: number) => `Controller ${n}: vibration sent`,
+
   // ---- ages and levels
   ageSeconds: (n: number) => `${n} s ago`,
   ageMinutes: (n: number) => `${n} min ago`,
@@ -96,9 +120,9 @@ const en = {
   // ---- "General" section
   general: "General",
   groupMonitoring: "Monitoring",
-  monitorToggle: "Read battery status",
+  monitorToggle: "Live USB monitoring",
   monitorToggleHint:
-    "Reads the receivers' USB traffic (usbmon) to show battery level and connections. Only status and counters are kept, never button presses.",
+    "Follows the receivers' USB traffic (usbmon) to see connections and battery reports the moment they happen. Without it, controllers are still listed (found through the system) and show the battery level of the last query: at plugin start or with “Query battery now”. Only status and counters are kept, never button presses.",
   monitorCannotStart: "Monitor cannot start",
   busN: (bus: string) => `Bus ${bus}`,
   groupPower: "Power",
@@ -181,6 +205,7 @@ const en = {
     unit_setup_failed: "The service could not be set up",
     unit_removal_failed: "The service could not be removed completely",
     settings_not_saved: "The setting could not be saved",
+    rumble_unavailable: "The controller cannot vibrate right now (no usable input device)",
   },
 };
 
@@ -198,6 +223,27 @@ const de: Messages = {
   unofficial: "inoffiziell",
   backendUnreachable: (detail) => `Backend nicht erreichbar: ${detail}`,
   dismissHint: "Zum Ausblenden auswählen",
+
+  groupLanguage: "Sprache",
+  languageSetting: "Sprache",
+  languageHint: "Automatisch folgt der Steam-Sprache.",
+  languageAuto: "Automatisch (Steam-Sprache)",
+  languageEnglish: "English",
+  languageGerman: "Deutsch",
+
+  startupQueryToggle: "Akku beim Start abfragen",
+  startupQueryHint:
+    "Beim Start des Plugins wird jeder verbundene Controller einmal abgefragt und verschwindet dabei für etwa 3 Sekunden. Ohne das zeigt ein schon verbundener Controller keinen Akkustand, bis du ihn abfragst.",
+  lowBatteryToggle: "Bei niedrigem Akku warnen",
+  lowBatteryHint:
+    "Zeigt eine Benachrichtigung, wenn ein Controller Akkustufe 0 oder 1 von 3 meldet. Der Receiver meldet die Stufe nur beim Verbinden eines Controllers oder bei einer Abfrage, die Warnung erscheint daher zu diesen Zeitpunkten. Annahme: 0 heißt leer, 1 niedrig (am Gerät nicht geprüft).",
+  lowBatteryTitle: "Controller-Akku niedrig",
+  lowBatteryBody: (n, level) => `Controller ${n}: Akkustufe ${level}/3`,
+
+  groupIdentify: "Erkennen",
+  findController: "Controller finden",
+  findControllerHint: "Lässt den Controller etwa eine Sekunde vibrieren und seine LED einmal blinken.",
+  foundController: (n) => `Controller ${n}: Vibration gesendet`,
 
   ageSeconds: (n) => `vor ${n} s`,
   ageMinutes: (n) => `vor ${n} min`,
@@ -260,9 +306,9 @@ const de: Messages = {
 
   general: "Allgemein",
   groupMonitoring: "Überwachung",
-  monitorToggle: "Akku-Status mitlesen",
+  monitorToggle: "Live-Überwachung per USB",
   monitorToggleHint:
-    "Liest den USB-Verkehr der Receiver mit (usbmon), um Akkustand und Verbindungen zu zeigen. Gespeichert werden nur Status und Zähler, nie Tastendrücke.",
+    "Verfolgt den USB-Verkehr der Receiver (usbmon), um Verbindungen und Akkumeldungen im Moment ihres Auftretens zu sehen. Ohne das werden Controller trotzdem angezeigt (über das System erkannt) und zeigen den Akkustand der letzten Abfrage: beim Start des Plugins oder mit „Akku jetzt abfragen“. Gespeichert werden nur Status und Zähler, nie Tastendrücke.",
   monitorCannotStart: "Monitor nicht startbar",
   busN: (bus) => `Bus ${bus}`,
   groupPower: "Energie",
@@ -341,6 +387,7 @@ const de: Messages = {
     unit_setup_failed: "Der Dienst konnte nicht eingerichtet werden",
     unit_removal_failed: "Der Dienst konnte nicht vollständig entfernt werden",
     settings_not_saved: "Die Einstellung konnte nicht gespeichert werden",
+    rumble_unavailable: "Der Controller kann gerade nicht vibrieren (kein nutzbares Eingabegerät)",
   },
 };
 
@@ -365,6 +412,18 @@ export function detectLanguage(
     if (code === "en" || code.startsWith("en-") || code.startsWith("en_")) return "en";
   }
   return "en";
+}
+
+/** The language choice stored in the backend: "auto" or a language code; anything unsupported means "auto". */
+export function resolveLanguage(setting: string | undefined, detected: Lang): Lang {
+  return setting === "en" || setting === "de" ? setting : detected;
+}
+
+/** A pending low-battery notice from the backend; `language` is the stored language choice. */
+export interface LowBatteryNotice {
+  slot: number;
+  level: number;
+  language?: string;
 }
 
 // ---------------------------------------------------------------- text helpers

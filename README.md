@@ -2,7 +2,7 @@
 
 Decky Loader plugin for the **Xbox 360 Wireless Gaming Receiver** on Bazzite and SteamOS (Gaming Mode). It shows the battery level of all connected controllers, controls their LEDs and turns them off, including on standby and on shutdown. Several receivers are supported. The UI is available in **English and German** and follows the Steam language (see [Languages](#languages)).
 
-> **Status:** The plugin runs on a Bazzite device with one receiver (USB ID `045E:0719`) and one gamepad (2 AA batteries, no charging cable). Battery query, LED assignment, turning off and the layout have been checked there. "Turn off on shutdown" (through a systemd service, see [note](#turn-off-on-shutdown)) works there too. What is confirmed and what only comes from source code or unit tests is listed in [`PLAN.md`](PLAN.md) and [`docs/PROTOCOL.md`](docs/PROTOCOL.md). The English/German UI has been checked against stand-in Decky components and with unit tests only; it has not been seen on a device yet.
+> **Status:** The plugin runs on a Bazzite device with one receiver (USB ID `045E:0719`) and one gamepad (2 AA batteries, no charging cable). Battery query, LED assignment, turning off and the layout have been checked there. "Turn off on shutdown" (through a systemd service, see [note](#turn-off-on-shutdown)) works there too. What is confirmed and what only comes from source code or unit tests is listed in [`PLAN.md`](PLAN.md) and [`docs/PROTOCOL.md`](docs/PROTOCOL.md). The English and German UI works on the device according to the user (2026-11-07). The rumble test ("Find controller"), the low-battery notification and the wake-up handling were added afterwards and are only unit-tested; they have not been tried on a device yet.
 
 ## Features
 
@@ -10,16 +10,22 @@ UI texts are quoted in English below; the German UI shows the translations from 
 
 | Area | What the plugin does |
 |------|----------------------|
-| **General** (applies to all receivers) | *Monitoring:* "Read battery status" (USB monitor, off by default). *Power:* "Turn off on standby", "Turn off on shutdown", "Turn off all controllers now". *Diagnostics:* result of the last run on shutdown. |
+| **General** (applies to all receivers) | *Monitoring:* "Live USB monitoring" (USB monitor, off by default), "Query battery at start", "Warn when battery is low". *Power:* "Turn off on standby" (turns the controllers off when the device goes to sleep), "Turn off on shutdown", "Turn off all controllers now". *Language:* Automatic (Steam language), English or Deutsch. *Diagnostics:* result of the last run on shutdown. |
 | **Receiver** | One section per receiver, with the connected controllers as expandable cards. |
-| **Controller card** | Battery as a bar with a level (0 to 3, the protocol only knows four levels), "Query battery now", "Turn off controller", LED pattern (modes 0 to 15; `xpad0` is controller 1, `xpad1` controller 2 …), details. |
-| **Battery after start** | The receiver reports the battery only when a controller connects. That is why the plugin queries all already connected controllers once right after it starts and remembers the value. |
+| **Controller card** | Battery as a bar with a level (0 to 3, the protocol only knows four levels), "Query battery now", "Turn off controller", "Find controller" (vibrates for about a second and blinks the LED once), LED pattern (modes 0 to 15; `xpad0` is controller 1, `xpad1` controller 2 …), details. |
+| **Battery after start** | The receiver reports the battery only when a controller connects. That is why the plugin queries all already connected controllers once right after it starts and remembers the value (switchable with "Query battery at start"). |
+| **Low-battery notification** | A toast appears when a controller reports battery level 0 or 1 of 3, also while the plugin panel is closed. It assumes 0 = empty and 1 = low (unverified) and appears when a controller connects or is queried, because that is when the receiver reports the level. |
+
+### What "Live USB monitoring" does and does not do
+
+The switch only decides whether the plugin follows the receivers' USB traffic live (usbmon). With it **off**, which is the default, the plugin still lists the connected controllers (it finds them through the system, in sysfs) and shows a battery level whenever one is known: from the query at plugin start ("Query battery at start") or from "Query battery now". With it **on**, connections and battery reports are also picked up the moment they happen, for example when a controller connects. To see no battery levels at all, switch off "Query battery at start" as well and do not query by hand.
 
 ## Languages
 
 The plugin UI is available in **English** and **German**. It follows the language of the Steam client, so it behaves the same on SteamOS and on Bazzite, and the language of the operating system does not matter:
 
-- The frontend reads `navigator.language` (and `navigator.languages`) and uses German for `de`, `de-DE` and similar; every other language falls back to English. Decky Loader detects its own UI language the same way (`i18next` with `lng: navigator.language`, read in the Decky source on 2026-11-06). That `navigator.language` really follows the Steam language inside Steam's browser has **not** been checked on a device yet.
+- The frontend reads `navigator.language` (and `navigator.languages`) and uses German for `de`, `de-DE` and similar; every other language falls back to English. Decky Loader detects its own UI language the same way (`i18next` with `lng: navigator.language`, read in the Decky source on 2026-11-06). The user confirmed on 2026-11-07 that the UI follows the Steam language in German and in English.
+- The setting **Language** (General → Language) overrides the detection: "Automatic (Steam language)", "English" or "Deutsch". The choice is stored in the plugin's settings.
 - All UI text lives in `src/i18n.ts`. The English catalog defines the shape of every message and the German catalog must match it, so a missing or mistyped German text fails `npm run typecheck`.
 - The Python backend is language-neutral: it never produces text in the user's language. Failed actions return an English technical message plus, where a user can act on the failure, a stable code from `x360w.error_codes` (and the diagnostics verdict as a code with parameters). The frontend translates those. Technical details such as kernel or libusb messages are shown as they are (English).
 - External programs run with `LANG=C` and `LC_ALL=C` (`safe_exec.py`), `tools/discover.sh` does the same, and the systemd unit text is English, so nothing depends on the system language.
@@ -27,12 +33,13 @@ The plugin UI is available in **English** and **German**. It follows the languag
 
 ## How it works
 
-The kernel driver `xpad` does not show the battery and offers no way to turn a controller off. The plugin uses four ways (details and confidence levels in `PLAN.md`):
+The kernel driver `xpad` does not show the battery and offers no way to turn a controller off. The plugin uses five ways (details and confidence levels in `PLAN.md`):
 
 1. **sysfs** (always): detect receivers, occupied slots, LEDs under `/sys/class/leds/xpadN/brightness`, standby behavior through `/sys/module/xpad/parameters/auto_poweroff`.
-2. **USB monitor `usbmon`** (optional, switch "Read battery status"): reads the receiver's packets and decodes connection and battery level. It sees the whole bus; the plugin filters immediately by bus and device, discards everything else and only counts input packets.
+2. **USB monitor `usbmon`** (optional, switch "Live USB monitoring"): reads the receiver's packets and decodes connection and battery level. It sees the whole bus; the plugin filters immediately by bus and device, discards everything else and only counts input packets.
 3. **Short access through libusb** (query battery, turn off): `xpad` briefly releases the slot's interface, the plugin sends `00 00 00 40` (battery request) or `00 00 08 C0` (turn off), then `xpad` binds again. The affected controller disappears for about 3 seconds.
 4. **systemd service** (only for "Turn off on shutdown").
+5. **Force feedback through the controller's evdev node** (only for "Find controller"): one short rumble effect is uploaded, played and removed again. The node is opened write-only, so no input is ever read, and no USB takeover is involved.
 
 ### Turn off on shutdown
 
@@ -112,7 +119,7 @@ node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 |------|---------|
 | `plugin.json`, `package.json`, `rollup.config.js`, `tsconfig.json`, `main.py`, `src/index.tsx` | Decky plugin (metadata, backend entry, UI), compared with the official template |
 | `src/i18n.ts` | All UI texts in English and German, language detection, translation of error codes and diagnostics |
-| `py_modules/x360w/` | Backend library: protocol (`protocol`), usbmon parser and reader, state machine (`monitor`), monitoring service (`service`), LED and `auto_poweroff` (`controls`), receiver discovery (`discovery`), view per receiver (`view`), short access and actions (`takeover`, `actions`), battery cache (`battery_cache`), turning off several controllers (`shutdown`), systemd service (`poweroff_unit`, `poweroff_cli`), cleanup on removal (`cleanup`), fixed program calls (`safe_exec`), error codes for the frontend (`error_codes`) |
+| `py_modules/x360w/` | Backend library: protocol (`protocol`), usbmon parser and reader, state machine (`monitor`), monitoring service (`service`), LED and `auto_poweroff` (`controls`), receiver discovery (`discovery`), view per receiver (`view`), short access and actions (`takeover`, `actions`), battery cache (`battery_cache`), turning off several controllers (`shutdown`), rumble test (`rumble`), low-battery watcher (`low_battery`), resume-from-suspend detection (`resume`), systemd service (`poweroff_unit`, `poweroff_cli`), cleanup on removal (`cleanup`), fixed program calls (`safe_exec`), error codes for the frontend (`error_codes`) |
 | `tests/` | Unit tests and captures (`tests/fixtures/`) |
 | `tools/make_zip.py` | builds the zip for Decky |
 | `tools/frontend_render_test.mjs` | render test of the built frontend (both languages) |
@@ -125,9 +132,9 @@ node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 
 ## Security and privacy
 
-- The backend runs as root but writes only to the named sysfs paths and knows exactly these external calls: `modprobe usbmon`, `systemctl daemon-reload | enable --now | disable --now` for its one own service (all with an absolute path and a sanitized environment, without user input) and the two USB commands of the short access to known receivers and slots 0 to 3.
+- The backend runs as root but writes only to the named sysfs paths and knows exactly these external calls: `modprobe usbmon`, `systemctl daemon-reload | enable --now | disable --now` for its one own service (all with an absolute path and a sanitized environment, without user input) and the two USB commands of the short access to known receivers and slots 0 to 3. For "Find controller" it additionally writes one force-feedback effect to the `/dev/input/eventN` node that sysfs shows under a known receiver's slot interface (write-only, fixed strength, at most 3 seconds).
 - The service runs as root. Its folder and files belong to root and are writable only by root (0644/0755, independent of the `umask`); symlinks at these locations are rejected.
-- usbmon is off by default and is only loaded with the "Read battery status" switch. Captures of other devices are discarded immediately and never stored or logged; input packets are only counted.
+- usbmon is off by default and is only loaded with the "Live USB monitoring" switch. Captures of other devices are discarded immediately and never stored or logged; input packets are only counted.
 - There is no network access.
 
 ## Known limits
@@ -138,7 +145,9 @@ node <path-to-repo>/tools/frontend_render_test.mjs <path-to-repo>/dist/index.js
 - Chatpad and headset are not supported.
 - "Turn off on shutdown" has only been tested with one receiver and one controller, and only on shutdown (not specifically on reboot).
 - Focus navigation with the controller in the plugin UI has not been specifically tested.
-- Languages: only English and German. Which language the UI picks on a real device (`navigator.language` inside Steam) has not been verified yet. Technical error details from the backend are shown untranslated (English).
+- Languages: only English and German. Most German texts are the plugin's original ones; those added later (error messages, controller type names, the newer settings) were written by the assistant and not reviewed by a native speaker. Technical error details from the backend are shown untranslated (English).
+- "Find controller", the low-battery notification and the wake-up handling are only unit-tested and have not been tried on a device. The notification depends on the unverified assumption that level 0 means empty and 1 means low.
+- Everything that needs other hardware has not been tested: a battery that drains, other battery types or charging, a second receiver, other controller types (guitar, wheel, drums), headset and chatpad.
 
 ## License
 

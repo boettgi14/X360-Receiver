@@ -39,8 +39,10 @@ globalThis.DFL = {
     h("div", { className: "toggle", "data-checked": String(checked), onClick: () => onChange(!checked) }, h("b", null, label), h("i", null, description)),
   ButtonItem: ({ children, description, onClick, disabled }) =>
     h("button", { disabled, onClick }, children, description && h("i", null, description)),
-  DropdownItem: ({ label, rgOptions, selectedOption }) =>
-    h("div", { className: "dropdown", "data-selected": String(selectedOption), "data-labels": rgOptions.map((o) => o.label).join("|") }, label),
+  DropdownItem: ({ label, rgOptions, selectedOption, onChange }) => {
+    dropdowns[label] = { rgOptions, onChange };
+    return h("div", { className: "dropdown", "data-label": label, "data-selected": String(selectedOption), "data-labels": rgOptions.map((o) => o.label).join("|") }, label);
+  },
   ConfirmModal: ({ strTitle }) => h("div", null, strTitle),
   showModal: () => {},
   staticClasses: { Title: "t" },
@@ -50,12 +52,19 @@ globalThis.SP_JSX = jsxRuntime;
 
 let calls = [];
 let status;
+const dropdowns = {}; // label -> { rgOptions, onChange } of the last render
+const toasts = [];
 let answers = {}; // call name → result; default is { ok: true }
 globalThis.window.__DECKY_SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED_deckyLoaderAPIInit = {
   connect: () => ({
-    callable: (name) => async (...args) => { calls.push([name, ...args]); return name === "get_status" ? status : (answers[name] ?? { ok: true }); },
+    callable: (name) => async (...args) => {
+      calls.push([name, ...args]);
+      if (name === "get_status") return status;
+      if (name === "take_low_battery_notices") { const pending = answers[name] ?? []; delete answers[name]; return pending; } // handed out once
+      return answers[name] ?? { ok: true };
+    },
     definePlugin: (fn) => fn,
-    addEventListener() {}, removeEventListener() {}, toaster: {},
+    addEventListener() {}, removeEventListener() {}, toaster: { toast: (data) => toasts.push(data) },
   }),
 };
 globalThis.document = dom.window.document;
@@ -71,7 +80,7 @@ const slot = (n, over = {}) => ({
   subtype: 1, subtype_name: "Gamepad", battery_level: null, state_age_s: null, state_source: null, connected_age_s: 5, last_led_mode: null, ...over,
 });
 const base = () => ({
-  settings: { monitor_enabled: true, auto_poweroff: true, poweroff_on_shutdown: false },
+  settings: { monitor_enabled: true, auto_poweroff: true, poweroff_on_shutdown: false, startup_query: true, low_battery_toast: true, language: "auto" },
   monitor: { enabled: true, setup_error: null, readers: {} },
   led_modes: { 0: "off", 6: "position 1 on" },
   diagnostics: {
@@ -103,6 +112,12 @@ const TEXT = {
     setupFailed: "The service could not be set up: boom", fallbackError: "something technical",
     partial: "1 of 2 controllers turned off, error: slot 2 timed out", optionOff: "(The option is now off.)",
     installFailed: "The service is not set up: no systemd", runFailed: "ran at the last shutdown but failed: OSError: x",
+    find: "Find controller", found: "Controller 1: vibration sent", identify: "Identify",
+    rumbleUnavailable: "The controller cannot vibrate right now (no usable input device): denied",
+    toggleStartup: "Query battery at start", toggleLow: "Warn when battery is low", languageLabel: "Language",
+    toastTitle: "Controller battery low", toastBody: "Controller 2: battery level 0/3",
+    toastBodyDe: "Controller 2: Akkustufe 0/3", toastTitleDe: "Controller-Akku niedrig",
+    optionAuto: "Automatic (Steam language)", generalDe: "Allgemein", generalEn: "General",
   },
   de: {
     order: ["Allgemein", "Überwachung", "Energie", "Beim Standby ausschalten", "Beim Herunterfahren ausschalten", "Receiver 1", "Controller 1", "Stufe 2/3", "Controller 3", "Receiver 2"],
@@ -120,6 +135,12 @@ const TEXT = {
     setupFailed: "Der Dienst konnte nicht eingerichtet werden: boom", fallbackError: "something technical",
     partial: "1 von 2 Controllern ausgeschaltet, Fehler: slot 2 timed out", optionOff: "(Option ist jetzt aus.)",
     installFailed: "Der Dienst ist nicht eingerichtet: no systemd", runFailed: "lief beim letzten Herunterfahren, scheiterte aber: OSError: x",
+    find: "Controller finden", found: "Controller 1: Vibration gesendet", identify: "Erkennen",
+    rumbleUnavailable: "Der Controller kann gerade nicht vibrieren (kein nutzbares Eingabegerät): denied",
+    toggleStartup: "Akku beim Start abfragen", toggleLow: "Bei niedrigem Akku warnen", languageLabel: "Sprache",
+    toastTitle: "Controller-Akku niedrig", toastBody: "Controller 2: Akkustufe 0/3",
+    toastBodyDe: "Controller 2: Akkustufe 0/3", toastTitleDe: "Controller-Akku niedrig",
+    optionAuto: "Automatisch (Steam-Sprache)", generalDe: "Allgemein", generalEn: "General",
   },
 };
 
@@ -131,12 +152,18 @@ const click = async (el) => { await act(async () => { el.dispatchEvent(new dom.w
 const fields = (text) => [...document.querySelectorAll(".field")].filter((f) => f.textContent.includes(text));
 const toggle = (name) => [...document.querySelectorAll(".toggle")].find((t) => t.textContent.includes(name));
 
+let currentPlugin = null;
 async function mount(languages) {
   setNavigator(languages);
   const root = createRoot(document.getElementById("root"));
-  await act(async () => { root.render(bundle().content); });
+  currentPlugin = bundle();
+  await act(async () => { root.render(currentPlugin.content); });
   await flush();
   return root;
+}
+async function unmount(root) {
+  currentPlugin.onDismount(); // stops the low-battery poll
+  await act(async () => { root.unmount(); });
 }
 
 async function runSuite(lang, languages) {
@@ -149,7 +176,9 @@ async function runSuite(lang, languages) {
   const out = plain();
   let pos = -1;
   for (const needle of T.order) { const i = out.indexOf(needle, pos + 1); assert.ok(i > pos, `${label} "${needle}" missing or in the wrong place`); pos = i; }
-  assert.ok(!out.includes(T.query), `${label} cards must start collapsed`);
+  // The monitor switch's hint mentions this label in prose, so look for the button, not for the text.
+  const buttonTexts = () => [...document.querySelectorAll("button")].map((b) => b.textContent);
+  assert.ok(!buttonTexts().some((text) => text.includes(T.query)), `${label} cards must start collapsed`);
   assert.ok(out.includes(T.moreControllers), `${label} unassigned controller is mentioned`);
   assert.ok(out.includes(T.ledsOfReceiver));
   assert.ok(out.includes(T.slotsInUse));
@@ -167,7 +196,7 @@ async function runSuite(lang, languages) {
   assert.equal(open.split(T.level2).length - 1, 1, `${label} level only once (header row)`);
   assert.ok(!open.slice(0, open.indexOf("Receiver 2")).includes(T.ledPattern), `${label} no LED group in the card without an assigned LED`);
   assert.ok(open.slice(open.indexOf("Receiver 2")).includes(`${T.ledPattern} (xpad4)`), `${label} unassignable LED sits at the receiver`);
-  const card = open.slice(open.indexOf(T.query) - 40);
+  const card = open.slice(open.lastIndexOf(T.query) - 40); // the button comes after the General section's hint
   assert.ok(card.indexOf(TEXT[lang].order[2]) < card.indexOf(T.details), `${label} group order Battery → Power → Details`);
 
   // --- diagnostics: verdict visible, single steps only after expanding
@@ -216,7 +245,7 @@ async function runSuite(lang, languages) {
   status.receivers[0].unassigned_leds = [];
   await flush();
   assert.ok(plain().includes(`${T.ledPattern} (xpad0)`), `${label} LED group in the open card`);
-  const dropdown = document.querySelector(".dropdown");
+  const dropdown = document.querySelector(`.dropdown[data-label^="${T.ledPattern}"]`);
   assert.equal(dropdown.dataset.selected, "6");
   assert.ok(dropdown.dataset.labels.split("|").includes(T.mode6), `${label} LED mode names are translated`);
 
@@ -232,6 +261,56 @@ async function runSuite(lang, languages) {
   status.receivers[0].controllers = [slot(0, { battery_level: 1, state_age_s: 7200 })];
   await flush();
   assert.ok(plain().includes(T.twoHours), `${label} hours with decimal separator`);
+
+  // --- find controller: backend call, message, translated error
+  status = base();
+  await flush();
+  const findButton = () => [...document.querySelectorAll("button")].find((b) => b.textContent.includes(T.find));
+  assert.ok(plain().includes(T.identify) && findButton(), `${label} identify group in the open card`);
+  await click(findButton()); await flush();
+  assert.deepEqual(calls.filter((c) => c[0] === "find_controller"), [["find_controller", 1, 2, 0]]);
+  assert.ok(plain().includes(T.found), `${label} success message`);
+  answers.find_controller = { ok: false, error: "Cannot open x", code: "rumble_unavailable", detail: "denied" };
+  await click(findButton()); await flush();
+  assert.ok(plain().includes(T.rumbleUnavailable), `${label} rumble error translated`);
+  answers = {};
+
+  // --- new switches and the language choice call the backend
+  await click(toggle(T.toggleStartup));
+  await click(toggle(T.toggleLow));
+  assert.deepEqual(calls.filter((c) => c[0] === "set_startup_query"), [["set_startup_query", false]]);
+  assert.deepEqual(calls.filter((c) => c[0] === "set_low_battery_toast"), [["set_low_battery_toast", false]]);
+  const picker = dropdowns[T.languageLabel];
+  assert.deepEqual(picker.rgOptions.map((o) => [o.data, o.label]),
+                   [["auto", T.optionAuto], ["en", "English"], ["de", "Deutsch"]], `${label} language options`);
+  assert.equal(document.querySelector(`.dropdown[data-label="${T.languageLabel}"]`).dataset.selected, "auto");
+  await act(async () => { await picker.onChange({ data: "de" }); });
+  assert.deepEqual(calls.filter((c) => c[0] === "set_language"), [["set_language", "de"]]);
+
+  // --- the stored language choice overrides Steam's language
+  const other = lang === "en" ? "de" : "en";
+  status = base(); status.settings.language = other;
+  await flush();
+  assert.ok(plain().includes(other === "de" ? T.generalDe : T.generalEn), `${label} stored choice "${other}" wins over Steam's language`);
+  status = base(); status.settings.language = "fr"; // unsupported choice: follow Steam again
+  await flush();
+  assert.ok(plain().includes(lang === "de" ? T.generalDe : T.generalEn), `${label} unsupported choice follows Steam`);
+  status = base();
+  await flush();
+
+  // --- low-battery notices become toasts, in the language the notice carries
+  toasts.length = 0;
+  answers.take_low_battery_notices = [{ slot: 1, level: 0, language: "auto" }];
+  await flush();
+  assert.equal(toasts.length, 1, `${label} one toast`);
+  assert.equal(toasts[0].title, T.toastTitle);
+  assert.equal(toasts[0].body, T.toastBody);
+  answers.take_low_battery_notices = [{ slot: 1, level: 0, language: "de" }];
+  await flush();
+  assert.equal(toasts.length, 2);
+  assert.deepEqual([toasts[1].title, toasts[1].body], [T.toastTitleDe, T.toastBodyDe], `${label} notice language "de"`);
+  await flush();
+  assert.equal(toasts.length, 2, `${label} a notice is shown once`);
 
   // --- diagnostics verdicts
   const verdicts = [
@@ -265,7 +344,7 @@ async function runSuite(lang, languages) {
   await flush();
   assert.ok(plain().includes(T.noController));
 
-  await act(async () => { root.unmount(); });
+  await unmount(root);
   console.log(`${label} render test OK, ${calls.length} backend calls`);
 }
 
@@ -277,7 +356,7 @@ async function languageOf(languages) {
   status = base(); calls = []; answers = {};
   const root = await mount(languages);
   const text = plain();
-  await act(async () => { root.unmount(); });
+  await unmount(root);
   return text.includes("Allgemein") ? "de" : text.includes("General") ? "en" : "?";
 }
 assert.equal(await languageOf(["de"]), "de");

@@ -179,6 +179,66 @@ class ReaderServiceTests(unittest.TestCase):
             self.assertEqual(service.status()["readers"], {})
 
 
+class RestartReadersTests(unittest.TestCase):
+    class FakeReader:
+        instances = []
+
+        def __init__(self, bus, monitor, devnums, template, clock):
+            self.bus, self.devnums = bus, set(devnums)
+            self.error, self.opened, self.matched = None, True, 0
+            self.started = self.stopped = self.joined = False
+            self.instances.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def join(self, timeout=None):
+            self.joined = True
+
+        def is_alive(self):
+            return self.started and not self.stopped
+
+        def set_devices(self, devnums):
+            self.devnums = set(devnums)
+
+    def make_service(self):
+        from unittest import mock
+        from x360w.discovery import ReceiverInfo
+
+        self.FakeReader.instances = []
+        info = ReceiverInfo("1-3", 0x045E, 0x0719, "Receiver", 1, 2, None, None, None, None)
+        patcher = mock.patch("x360w.service.UsbmonReader", self.FakeReader)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return MonitorService(find=lambda: [info], usbmon_template="/nonexistent/{bus}u", ensure=lambda template: None)
+
+    def test_old_readers_are_stopped_and_fresh_ones_started(self):
+        service = self.make_service()
+        service.enable()
+        [old] = self.FakeReader.instances
+        service.restart_readers()
+        self.assertTrue(old.stopped and old.joined)
+        self.assertEqual(len(self.FakeReader.instances), 2)
+        new = self.FakeReader.instances[1]
+        self.assertTrue(new.started and not new.stopped)
+        self.assertEqual(new.devnums, {2})
+        self.assertEqual(list(service.status()["readers"]), ["1"])
+        service.disable()
+
+    def test_restart_keeps_the_monitor_state_and_does_nothing_when_off(self):
+        service = self.make_service()
+        service.restart_readers()  # monitor off: nothing to restart
+        self.assertEqual(self.FakeReader.instances, [])
+        service.enable()
+        service.monitor.feed(parse_usbmon_line(line("i", 1, "0880")), 1.0)
+        service.restart_readers()
+        self.assertTrue(service.snapshot()[0]["slots"][0]["connected"])
+        service.disable()
+
+
 class EnsureUsbmonTests(unittest.TestCase):
     def test_not_called_when_usbmon_present(self):
         from x360w.usbmon_reader import ensure_usbmon

@@ -6,6 +6,7 @@ import json
 import logging
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -78,7 +79,8 @@ class BackendTests(unittest.TestCase):
                     set(status),
                     {"settings", "monitor", "receivers", "led_modes", "diagnostics"},
                 )
-                self.assertEqual(set(status["settings"]), {"monitor_enabled", "auto_poweroff", "poweroff_on_shutdown"})
+                self.assertEqual(set(status["settings"]), {"monitor_enabled", "auto_poweroff", "poweroff_on_shutdown",
+                                                            "startup_query", "low_battery_toast", "language"})
                 self.assertFalse(status["settings"]["poweroff_on_shutdown"])
                 self.assertFalse(status["monitor"]["enabled"])
                 self.assertEqual(len(status["led_modes"]), 16)
@@ -391,6 +393,193 @@ class StartupBatteryTests(unittest.TestCase):
             asyncio.run(scenario(tmp))
 
 
+class NewOptionTests(unittest.TestCase):
+    """Startup query switch, language, low-battery notices, find controller, resume handling."""
+
+    STATE_LOW = {"battery_level": 1, "battery_type_raw": 1, "power_state_raw": 2}
+
+    def run_plugin(self, scenario, settings=None, **attrs):
+        async def wrapper(tmp):
+            if settings is not None:
+                (Path(tmp) / "x360w.json").write_text(json.dumps(settings))
+            main = load_main(tmp, **attrs)
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                return await scenario(main, plugin, tmp)
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            return asyncio.run(wrapper(tmp))
+
+    def receiver(self):
+        from x360w.discovery import ReceiverInfo
+        return ReceiverInfo("1-3", 0x045E, 0x0719, "R", 1, 2, None, None, None, None)
+
+    def test_startup_query_switch_is_saved_shown_and_respected(self):
+        async def scenario(main, plugin, tmp):
+            status = (await plugin.get_status())["settings"]
+            self.assertEqual((status["startup_query"], status["low_battery_toast"], status["language"]), (True, True, "auto"))
+            self.assertFalse((await plugin.set_startup_query("yes"))["ok"])
+            self.assertTrue((await plugin.set_startup_query(False))["ok"])
+            self.assertIs((await plugin.get_status())["settings"]["startup_query"], False)
+            self.assertIs(json.loads((Path(tmp) / "x360w.json").read_text())["startup_battery_query"], False)
+
+        self.run_plugin(scenario)
+
+    def test_no_battery_query_after_start_when_switched_off(self):
+        calls = []
+
+        async def wrapper(tmp):
+            (Path(tmp) / "x360w.json").write_text('{"startup_battery_query": false}')
+            main = load_main(tmp)
+            main.STARTUP_QUERY_DELAY_S = 0.0
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0, 1}), \
+                    mock.patch.object(main.discovery, "find_receivers", lambda: [self.receiver()]), \
+                    mock.patch.object(main.actions, "query_battery", lambda *a: calls.append(a) or {"ok": True, "state": None}):
+                plugin = main.Plugin()
+                await plugin._main()
+                try:
+                    await plugin.startup_task
+                finally:
+                    await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(wrapper(tmp))
+        self.assertEqual(calls, [])
+
+    def test_language_setting_is_validated_saved_and_shown(self):
+        async def scenario(main, plugin, tmp):
+            for good in ("de", "en", "auto", "pt-BR", "zh-Hans"):
+                self.assertTrue((await plugin.set_language(good))["ok"], good)
+                self.assertEqual((await plugin.get_status())["settings"]["language"], good)
+            for bad in ("../x", "", "DE", "deutsch", 5, None, "de\n", "a" * 40):
+                result = await plugin.set_language(bad)
+                self.assertFalse(result["ok"], repr(bad))
+            self.assertEqual((await plugin.get_status())["settings"]["language"], "zh-Hans")  # bad values changed nothing
+
+        self.run_plugin(scenario)
+
+    def test_a_corrupt_language_in_the_settings_falls_back_to_auto(self):
+        async def scenario(main, plugin, tmp):
+            self.assertEqual((await plugin.get_status())["settings"]["language"], "auto")
+
+        self.run_plugin(scenario, {"language": "../../etc"})
+
+    def test_low_battery_notice_flow(self):
+        async def scenario(main, plugin, tmp):
+            plugin.service._find = lambda: [self.receiver()]
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0}):
+                plugin.batteries.store((1, 2, 0), self.STATE_LOW)
+                plugin._collect_low_battery()
+                self.assertEqual(await plugin.take_low_battery_notices(),
+                                 [{"slot": 0, "level": 1, "language": "auto"}])
+                self.assertEqual(await plugin.take_low_battery_notices(), [])  # handed out once
+                plugin._collect_low_battery()
+                self.assertEqual(await plugin.take_low_battery_notices(), [])  # and not repeated while low
+                plugin.batteries.store((1, 2, 0), dict(self.STATE_LOW, battery_level=3))
+                plugin._collect_low_battery()
+                plugin.batteries.store((1, 2, 0), dict(self.STATE_LOW, battery_level=0))
+                plugin._collect_low_battery()
+                await plugin.set_language("de")
+                self.assertEqual(await plugin.take_low_battery_notices(),
+                                 [{"slot": 0, "level": 0, "language": "de"}])  # after new batteries, in the UI language
+                self.assertTrue((await plugin.set_low_battery_toast(False))["ok"])
+                plugin.batteries.store((1, 2, 0), self.STATE_LOW)
+                plugin._collect_low_battery()
+                self.assertEqual(await plugin.take_low_battery_notices(), [])  # switched off: nothing
+
+        self.run_plugin(scenario, {"startup_battery_query": False})
+
+    def test_pending_notices_are_bounded_and_keep_the_newest(self):
+        async def scenario(main, plugin, tmp):
+            plugin.service._find = lambda: []
+            plugin.low_battery.update = lambda views: [
+                {"bus": 1, "devnum": 2, "slot": i % 4, "level": i % 2} for i in range(40)
+            ]
+            plugin._collect_low_battery()
+            notices = await plugin.take_low_battery_notices()
+            self.assertEqual(len(notices), main.MAX_NOTICES)
+            self.assertEqual((notices[-1]["slot"], notices[-1]["level"]), (39 % 4, 39 % 2))  # the newest survived
+            self.assertTrue(all(set(notice) == {"slot", "level", "language"} for notice in notices))
+
+        self.run_plugin(scenario, {"startup_battery_query": False})
+
+    def test_find_controller_rumbles_and_blinks_the_led(self):
+        async def scenario(main, plugin, tmp):
+            plugin.service._find = lambda: [self.receiver()]
+            played, led = [], []
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0}), \
+                    mock.patch.object(main.discovery, "input_event_nodes", lambda r, slot: ["event5"] if slot == 0 else []), \
+                    mock.patch.object(main.controls, "led_owners", lambda: {"1-3": ["xpad0"]}), \
+                    mock.patch.object(main.controls, "set_led_mode", lambda name, mode: led.append((name, mode))), \
+                    mock.patch.object(main.rumble, "play", lambda path, *a, **k: played.append(path)):
+                self.assertEqual(await plugin.find_controller(1, 2, 0), {"ok": True, "led": True})
+                self.assertEqual((played, led), (["/dev/input/event5"], [("xpad0", 15)]))
+                # a slot without an input device: translated error, nothing played
+                result = await plugin.find_controller(1, 2, 2)
+                self.assertEqual((result["ok"], result["code"]), (False, "rumble_unavailable"))
+                self.assertEqual(len(played), 1)
+                # unknown receiver and bad arguments never reach the input device
+                self.assertEqual((await plugin.find_controller(9, 9, 0))["code"], "receiver_not_found")
+                self.assertEqual((await plugin.find_controller(1, 2, 7))["error"], "Slot must be 1 to 4")
+                self.assertFalse((await plugin.find_controller("1", 2, 0))["ok"])
+                self.assertEqual(len(played), 1)
+
+        self.run_plugin(scenario, {"startup_battery_query": False})
+
+    def test_find_controller_without_a_known_led_still_rumbles_and_passes_errors_on(self):
+        async def scenario(main, plugin, tmp):
+            plugin.service._find = lambda: [self.receiver()]
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0}), \
+                    mock.patch.object(main.discovery, "input_event_nodes", lambda r, slot: ["event5"]), \
+                    mock.patch.object(main.controls, "led_owners", lambda: {}), \
+                    mock.patch.object(main.rumble, "play", lambda path, *a, **k: None):
+                self.assertEqual(await plugin.find_controller(1, 2, 0), {"ok": True, "led": False})
+
+            def failing(path, *a, **k):
+                raise main.rumble.RumbleError("Cannot open x", "rumble_unavailable", "denied")
+
+            with mock.patch.object(main.discovery, "connected_slots_sysfs", lambda r: {0}), \
+                    mock.patch.object(main.discovery, "input_event_nodes", lambda r, slot: ["event5"]), \
+                    mock.patch.object(main.controls, "led_owners", lambda: {}), \
+                    mock.patch.object(main.rumble, "play", failing):
+                self.assertEqual(await plugin.find_controller(1, 2, 0),
+                                 {"ok": False, "error": "Cannot open x", "code": "rumble_unavailable", "detail": "denied"})
+
+        self.run_plugin(scenario, {"startup_battery_query": False})
+
+    def test_refresh_loop_restarts_the_readers_once_after_a_resume(self):
+        async def scenario(main, plugin, tmp):
+            restarts = []
+            plugin.service.restart_readers = lambda: restarts.append(1)
+            await asyncio.sleep(0.3)
+            return restarts
+
+        async def wrapper(tmp):
+            main = load_main(tmp)
+            main.REFRESH_INTERVAL_S = 0.02
+
+            class Detector:
+                calls = 0
+
+                def check(self):
+                    Detector.calls += 1
+                    return Detector.calls == 3  # the third tick is the first one after waking up
+
+            main.ResumeDetector = Detector
+            plugin = main.Plugin()
+            await plugin._main()
+            try:
+                return await scenario(main, plugin, tmp)
+            finally:
+                await plugin._unload()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(asyncio.run(wrapper(tmp)), [1])
+
+
 class PoweroffServiceTests(unittest.TestCase):
     """“Turn off on shutdown” sets up the systemd service and removes it again."""
 
@@ -651,6 +840,62 @@ class UninstallTests(unittest.TestCase):
             await plugin._uninstall()
             for d in dirs.values():
                 self.assertFalse(d.exists(), d)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_folders_are_deleted_while_the_slow_service_removal_is_still_running(self):
+        # Decky kills a plugin that needs more than about 5 s to shut down; `systemctl` can take a few seconds.
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            main = self._load(home, dirs)
+            started, release = threading.Event(), threading.Event()
+
+            def slow(*args):
+                started.set()
+                release.wait(10)
+                return {"ok": True, "errors": []}
+
+            main.fake_unit.uninstall = slow
+            plugin = main.Plugin()
+            await plugin._main()
+            await plugin._unload()
+            task = asyncio.ensure_future(plugin._uninstall())
+            for _ in range(200):
+                if started.is_set() and not any(d.exists() for d in dirs.values()):
+                    break
+                await asyncio.sleep(0.01)
+            folders_gone = not any(d.exists() for d in dirs.values())
+            finished_early = task.done()
+            release.set()
+            await task
+            self.assertTrue(folders_gone, "the folders must not wait for the service removal")
+            self.assertFalse(finished_early)
+            self.assertTrue(other.exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_a_refused_folder_stays_and_the_reason_is_logged(self):
+        async def scenario(tmp):
+            home, dirs, other, param = self._setup(tmp)
+            main = load_main(
+                str(dirs["settings"]),
+                DECKY_HOME=str(home / "not-the-real-home"),  # does not match the plugin folders
+                DECKY_PLUGIN_SETTINGS_DIR=str(dirs["settings"]),
+                DECKY_PLUGIN_RUNTIME_DIR=str(dirs["data"]),
+                DECKY_PLUGIN_LOG_DIR=str(dirs["logs"]),
+            )
+            plugin = main.Plugin()
+            await plugin._main()
+            await plugin._unload()
+            with self.assertLogs("decky-stub", level="WARNING") as logs:
+                await plugin._uninstall()
+            text = "\n".join(logs.output)
+            for attr in ("DECKY_PLUGIN_SETTINGS_DIR", "DECKY_PLUGIN_RUNTIME_DIR", "DECKY_PLUGIN_LOG_DIR"):
+                self.assertIn(f"{attr} not deleted: ", text)
+            self.assertIn("is not exactly DECKY_HOME", text)
+            self.assertTrue(all(d.exists() for d in dirs.values()))  # nothing outside DECKY_HOME is touched
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
