@@ -46,6 +46,7 @@ from x360w import (  # noqa: E402
     view,
 )
 from x360w.battery_cache import BatteryCache  # noqa: E402
+from x360w.loop_guard import LoopGuard  # noqa: E402
 from x360w.low_battery import LowBatteryWatcher  # noqa: E402
 from x360w.resume import ResumeDetector  # noqa: E402
 from x360w.service import MonitorService  # noqa: E402
@@ -54,7 +55,6 @@ REFRESH_INTERVAL_S = 5.0
 STARTUP_QUERY_DELAY_S = 1.0  # short pause after start so Decky can finish loading
 QUERY_BUSY_RETRIES = 5
 QUERY_BUSY_WAIT_S = 0.5
-SHUTDOWN_STEP_TIMEOUT_S = 2.0  # per slow step while unloading/uninstalling; Decky kills the plugin after 5 s in total
 EXIT_WATCHDOG_S = 4.3  # after this many seconds in _unload the process is ended; Decky sends SIGKILL after 5 s
 MAX_NOTICES = 16  # pending low-battery notices; older ones are dropped
 LANGUAGE_RE = re.compile(r"auto|[a-z]{2}(-[A-Za-z]{2,4})?")
@@ -129,7 +129,20 @@ class Plugin:
         self._remember_auto_poweroff()
         controls.set_auto_poweroff(enabled)
 
+    def _loop_starved(self) -> None:
+        """Called by the loop guard's thread when the event loop made no progress for seconds.
+
+        Decky's own socket reader spins after Decky closes its end while stopping the plugin and starves the
+        loop (see x360w.loop_guard). Nothing can run on the loop then, not even Decky's SIGTERM handler, so
+        the process ends itself before Decky's 5 s are over. There is nothing to save: settings are written
+        when they change, and the usbmon readers are daemon threads.
+        """
+        _log("warning", "x360w: the event loop is starved (Decky is stopping the plugin?), ending the process")
+        os._exit(0)
+
     async def _main(self):
+        self.guard = LoopGuard(self._loop_starved)
+        self.guard.start(asyncio.get_running_loop())
         self.service = MonitorService()
         self.batteries = BatteryCache()
         self.unit_error = None
@@ -257,43 +270,37 @@ class Plugin:
                 continue
         _log("warning", "x360w: exit watchdog could not be armed (no usable output stream)")
 
-    async def _run_bounded(self, name: str, function, timeout_s: float) -> bool:
-        """Runs `function` in a plain daemon thread and waits at most `timeout_s` for it. Never raises.
+    @staticmethod
+    def _step(name: str, function) -> bool:
+        """Runs one shutdown step directly (no thread, no executor) and logs its time. Never raises.
 
-        Used while the plugin is shutting down. It avoids `asyncio.to_thread` (the event loop's default
-        executor), which is the only awaited step the old `_unload` had. Every step is logged with its time.
+        Every earlier version that started a thread or used `asyncio.to_thread` here stopped logging at exactly
+        that point on the device (journal of 2026-11-07), so the shutdown path starts no thread at all. A slow
+        step is cut short by the exit watchdog, not by a thread.
         """
         started = time.monotonic()
-        outcome: dict = {}
-
-        def work() -> None:
-            try:
-                outcome["result"] = function()
-            except BaseException as exc:  # noqa: BLE001 - must be reported, not lost in the thread
-                outcome["error"] = exc
-
-        thread = threading.Thread(target=work, name=f"x360w-{name}", daemon=True)
-        thread.start()
-        while thread.is_alive() and time.monotonic() - started < timeout_s:
-            await asyncio.sleep(0.02)
-        took = time.monotonic() - started
-        if thread.is_alive():
-            _log("warning", f"{name}: still running after {took:.1f} s, not waiting any longer")
+        try:
+            function()
+        except Exception as exc:  # noqa: BLE001 - must be reported, must not stop the shutdown
+            _log("error", f"{name}: failed after {time.monotonic() - started:.2f} s: {exc!r}")
             return False
-        if "error" in outcome:
-            _log("error", f"{name}: failed after {took:.2f} s: {outcome['error']!r}")
-            return False
-        _log("info", f"{name}: done in {took:.2f} s")
+        _log("info", f"{name}: done in {time.monotonic() - started:.2f} s")
         return True
 
     async def _unload(self):
+        # NO await that really suspends in here, nor in `_uninstall`: if Decky's socket reader is already
+        # spinning, the loop would never come back to this coroutine (see x360w.loop_guard). Everything below
+        # runs in one go; a test (`test_unload_and_uninstall_never_suspend`) keeps it that way.
+        guard = getattr(self, "guard", None)
+        if guard is not None:
+            guard.stop()  # from here the exit watchdog below is responsible (a slow step must not look like starvation)
         _log("info", "x360w unloading")
         self._arm_exit_watchdog()
         for task in (self.refresh_task, self.startup_task, self.unit_task):
             if task is not None:
                 task.cancel()
         _log("info", "x360w: background tasks cancelled")
-        await self._run_bounded("stop monitor", self.service.disable, SHUTDOWN_STEP_TIMEOUT_S)
+        self._step("stop monitor", self.service.disable)
         _log("info", "x360w unloaded")
 
     async def _uninstall(self):
@@ -304,8 +311,9 @@ class Plugin:
         user); they stay and can be removed by hand. Not undone: the loaded kernel module usbmon (until
         reboot) and LED modes (until the controller connects the next time).
 
-        Decky kills a plugin that needs more than about 5 s to shut down, so the quick step comes first and
-        the service removal (`systemctl`, can take seconds) is bounded. Every step is logged.
+        Decky kills a plugin that needs more than about 5 s to shut down, so the quick step comes first. The
+        service removal (`systemctl`) runs directly; the exit watchdog armed in `_unload` ends the process if it
+        takes too long. Every step is logged.
         """
         _log("info", "x360w is being removed")
         try:
@@ -315,7 +323,7 @@ class Plugin:
         except (OSError, ValueError) as exc:
             _log("error", f"auto_poweroff not reset: {exc!r}")
         # even if the option is off: leave no remnant behind
-        await self._run_bounded("remove service", poweroff_unit.uninstall, SHUTDOWN_STEP_TIMEOUT_S)
+        self._step("remove service", poweroff_unit.uninstall)
 
     # -- Queries ------------------------------------------------------------
 

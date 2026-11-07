@@ -17,6 +17,22 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "py_modules"))
 
 
+class FakeGuard:
+    """Stand-in for x360w.loop_guard.LoopGuard: records what main.py does with it."""
+
+    instances = []
+
+    def __init__(self, on_starved, *args, **kwargs):
+        self.on_starved, self.started_with, self.stopped = on_starved, None, False
+        FakeGuard.instances.append(self)
+
+    def start(self, loop):
+        self.started_with = loop
+
+    def stop(self):
+        self.stopped = True
+
+
 class FakeUnit:
     """Stand-in for x360w.poweroff_unit in main.py: never real files under /etc or /var, never a real systemctl."""
 
@@ -63,6 +79,7 @@ def load_main(settings_dir, **attrs):
     spec = importlib.util.spec_from_file_location("x360w_main", ROOT / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.LoopGuard = FakeGuard  # the real one could end the test process; see tests/test_loop_guard.py
     # The real watchdog would end the test process 4.3 s after any _unload; tests that look at it patch this stand-in.
     module.faulthandler = types.SimpleNamespace(dump_traceback_later=lambda *a, **k: None)
     module.poweroff_unit = module.fake_unit = FakeUnit()  # replaced in main.py only, the real module stays untouched
@@ -863,37 +880,23 @@ class UninstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
-    def test_a_slow_service_removal_is_not_waited_for_forever(self):
-        async def scenario(tmp):
-            home, dirs, param = self._setup(tmp)
-            main = self._load(home, dirs)
-            main.SHUTDOWN_STEP_TIMEOUT_S = 0.2
-            gate = threading.Event()
-            main.fake_unit.uninstall = lambda *args: gate.wait(10)
-            plugin = main.Plugin()
-            await plugin._main()
-            await plugin._unload()
-            started = time.monotonic()
-            with self.assertLogs("decky-stub", level="WARNING") as logs:
-                await plugin._uninstall()
-            gate.set()
-            self.assertLess(time.monotonic() - started, 2.0)
-            self.assertIn("remove service: still running", "\n".join(logs.output))
-
-        with tempfile.TemporaryDirectory() as tmp:
-            asyncio.run(scenario(tmp))
-
-    def test_unload_and_uninstall_work_without_the_event_loops_thread_executor(self):
+    def test_the_shutdown_path_starts_no_thread_and_uses_no_executor(self):
+        # On the device the shutdown stopped logging at the first thread start / executor call, every time (journal
+        # of 2026-11-07). Whatever the cause, `_unload` and `_uninstall` must not depend on either.
         async def scenario(tmp):
             home, dirs, param = self._setup(tmp)
             main = self._load(home, dirs)
             plugin = main.Plugin()
             await plugin._main()
 
-            async def broken(*args, **kwargs):
+            async def broken_to_thread(*args, **kwargs):
                 raise AssertionError("asyncio.to_thread must not be used while shutting down")
 
-            with mock.patch.object(main.asyncio, "to_thread", broken), \
+            def broken_start(self_, *args, **kwargs):
+                raise AssertionError("no thread may be started while shutting down")
+
+            with mock.patch.object(main.asyncio, "to_thread", broken_to_thread), \
+                    mock.patch.object(main.threading.Thread, "start", broken_start), \
                     self.assertLogs("decky-stub", level="INFO") as logs:
                 await plugin._unload()
                 await plugin._uninstall()
@@ -902,26 +905,6 @@ class UninstallTests(unittest.TestCase):
                          "remove service: done"):
                 self.assertIn(step, text)
             self.assertEqual(main.fake_unit.calls, [("uninstall",)])
-
-        with tempfile.TemporaryDirectory() as tmp:
-            asyncio.run(scenario(tmp))
-
-    def test_a_hanging_monitor_stop_cannot_keep_unload_from_finishing(self):
-        async def scenario(tmp):
-            main = load_main(tmp)
-            main.SHUTDOWN_STEP_TIMEOUT_S = 0.2
-            plugin = main.Plugin()
-            await plugin._main()
-            gate = threading.Event()
-            plugin.service.disable = lambda: gate.wait(10)
-            started = time.monotonic()
-            with self.assertLogs("decky-stub", level="INFO") as logs:
-                await plugin._unload()
-            gate.set()
-            self.assertLess(time.monotonic() - started, 2.0)
-            text = "\n".join(logs.output)
-            self.assertIn("stop monitor: still running", text)
-            self.assertIn("x360w unloaded", text)
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
@@ -945,20 +928,20 @@ class UninstallTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))
 
-    def test_unload_arms_the_exit_watchdog_before_anything_else_that_can_hang(self):
+    def test_unload_arms_the_exit_watchdog_before_the_first_step_that_can_hang(self):
         async def scenario(tmp):
             main = load_main(tmp)
             plugin = main.Plugin()
             await plugin._main()
             armed = []
             order = []
-            real_cancel_all = plugin._run_bounded
+            real_step = plugin._step
 
-            async def spy(name, function, timeout):
-                order.append(("step", name, bool(armed)))  # was the watchdog armed before the first step?
-                return await real_cancel_all(name, function, timeout)
+            def spy(name, function):
+                order.append((name, bool(armed)))  # was the watchdog armed before the first step?
+                return real_step(name, function)
 
-            plugin._run_bounded = spy
+            plugin._step = spy
             with mock.patch.object(main.faulthandler, "dump_traceback_later",
                                    lambda timeout, **kw: armed.append((timeout, kw.get("exit")))):
                 await plugin._unload()
@@ -966,8 +949,56 @@ class UninstallTests(unittest.TestCase):
             timeout, exit_flag = armed[0]
             self.assertTrue(exit_flag, "the watchdog must end the process, not only print")
             self.assertLess(timeout, 5.0, "it has to fire before Decky's SIGKILL after 5 s")
-            self.assertGreater(timeout, main.SHUTDOWN_STEP_TIMEOUT_S * 2, "and not before the normal steps are done")
-            self.assertEqual(order, [("step", "stop monitor", True)])
+            self.assertGreater(timeout, 1.0, "and leave the normal steps time to finish")
+            self.assertEqual(order, [("stop monitor", True)])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_unload_and_uninstall_never_suspend(self):
+        # Decky's socket reader can spin and starve the loop (x360w.loop_guard). A coroutine that really suspends
+        # is then never resumed. So `_unload` and `_uninstall` must finish in their first step.
+        async def scenario(tmp):
+            home, dirs, param = self._setup(tmp)
+            main = self._load(home, dirs)
+            plugin = main.Plugin()
+            await plugin._main()
+            for coroutine in (plugin._unload(), plugin._uninstall()):
+                with self.assertRaises(StopIteration):  # finished without ever yielding to the loop
+                    coroutine.send(None)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_main_starts_a_loop_guard_and_unload_disarms_it_first(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            FakeGuard.instances.clear()
+            plugin = main.Plugin()
+            await plugin._main()
+            [guard] = FakeGuard.instances
+            self.assertIs(guard.started_with, asyncio.get_running_loop())
+            self.assertFalse(guard.stopped)
+            order = []
+            plugin._arm_exit_watchdog = lambda: order.append(("watchdog", guard.stopped))
+            await plugin._unload()
+            self.assertTrue(guard.stopped)
+            self.assertEqual(order, [("watchdog", True)])  # disarmed before the exit watchdog takes over
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(scenario(tmp))
+
+    def test_a_starved_loop_ends_the_process_and_says_so(self):
+        async def scenario(tmp):
+            main = load_main(tmp)
+            plugin = main.Plugin()
+            await plugin._main()
+            exits = []
+            with mock.patch.object(main.os, "_exit", exits.append), \
+                    self.assertLogs("decky-stub", level="WARNING") as logs:
+                FakeGuard.instances[-1].on_starved()
+            self.assertEqual(exits, [0])
+            self.assertIn("event loop is starved", "\n".join(logs.output))
 
         with tempfile.TemporaryDirectory() as tmp:
             asyncio.run(scenario(tmp))

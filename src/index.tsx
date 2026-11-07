@@ -266,18 +266,14 @@ function Content() {
 
   const runBattery = (bus: number, devnum: number, slot: number) =>
     guarded(async () => {
-      say(t.queryingBattery(slot + 1));
       const result = await queryBattery(bus, devnum, slot);
-      if (!result.ok) sayFailure(result);
-      else if (!result.state) say(t.noResponse(slot + 1), true);
-      else say(t.batteryQueried(slot + 1, levelText(t, result.state.battery_level)));
+      if (!result.ok) sayFailure(result); // the new level shows in the card; no message on success
     });
 
   const runFind = (bus: number, devnum: number, slot: number) =>
     guarded(async () => {
       const result = await findController(bus, devnum, slot);
       if (!result.ok) sayFailure(result);
-      else say(t.foundController(slot + 1));
     });
 
   const confirmPowerOff = (bus: number, devnum: number, slot: number) =>
@@ -290,8 +286,7 @@ function Content() {
           guarded(async () => {
             const result = await powerOff(bus, devnum, slot);
             if (!result.ok) sayFailure(result);
-            else if (result.confirmed) say(t.turnedOff(slot + 1));
-            else say(t.turnOffUnconfirmed(slot + 1), true);
+            else if (!result.confirmed) say(t.turnOffUnconfirmed(slot + 1), true);
           })
         }
       />,
@@ -305,12 +300,9 @@ function Content() {
         strOKButtonText={t.turnOffAllButton}
         onOK={() =>
           guarded(async () => {
-            say(t.turningOffAll);
             const result = await powerOffAll();
             // The error details come from the backend as English technical text.
             if (result.errors.length > 0) say(t.turnOffAllProblem(result.errors.join(" | ")), true);
-            else if (result.sent === 0) say(t.noConnectedController);
-            else say(t.turnedOffAll(result.sent, result.confirmed));
           })
         }
       />,
@@ -630,7 +622,7 @@ function Content() {
               </Field>
             </PanelSectionRow>
             {open["diagnostics"] === true && (
-              <div style={{ borderLeft: `2px solid ${LINE}`, margin: "0 0 6px 14px", paddingLeft: 8 }}>
+              <div style={{ marginLeft: 14 }}>
                 {status.diagnostics.lines.map((line, i) => (
                   <PanelSectionRow key={i}>
                     <Field

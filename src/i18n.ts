@@ -52,7 +52,6 @@ const en = {
   groupIdentify: "Identify",
   findController: "Find controller",
   findControllerHint: "Vibrates the controller for a few seconds.",
-  foundController: (n: number) => `Controller ${n}: vibration sent`,
 
   // ---- ages and levels
   ageSeconds: (n: number) => `${n} s ago`,
@@ -101,22 +100,14 @@ const en = {
 
   // ---- messages after actions
   controllerN: (n: number) => `Controller ${n}`,
-  queryingBattery: (n: number) => `Controller ${n}: querying battery …`,
-  noResponse: (n: number) => `Controller ${n}: no response (off or not connected?)`,
-  batteryQueried: (n: number, level: string) => `Controller ${n}: battery ${level.toLowerCase()}, queried just now`,
   turnOffTitle: (n: number) => `Turn off controller ${n}?`,
   turnOffText: "The controller turns off and has to be switched back on with its Guide button.",
   turnOffButton: "Turn off",
-  turnedOff: (n: number) => `Controller ${n}: turned off`,
   turnOffUnconfirmed: (n: number) => `Controller ${n}: command sent, no confirmation (may have been off already)`,
   turnOffAllTitle: "Turn off all controllers?",
   turnOffAllText: "All connected controllers on all receivers turn off. Same procedure as on shutdown.",
   turnOffAllButton: "Turn off all",
-  turningOffAll: "Turning off controllers …",
   turnOffAllProblem: (details: string) => `Problem while turning off: ${details}`,
-  noConnectedController: "No connected controller found",
-  turnedOffAll: (sent: number, confirmed: number) =>
-    `${sent} ${sent === 1 ? "controller" : "controllers"} turned off (${confirmed} confirmed)`,
 
   // ---- "General" section
   general: "General",
@@ -242,7 +233,6 @@ const de: Messages = {
   groupIdentify: "Erkennen",
   findController: "Controller finden",
   findControllerHint: "Lässt den Controller einige Sekunden vibrieren.",
-  foundController: (n) => `Controller ${n}: Vibration gesendet`,
 
   ageSeconds: (n) => `vor ${n} s`,
   ageMinutes: (n) => `vor ${n} min`,
@@ -287,21 +277,14 @@ const de: Messages = {
   ledReset: "Auf Standard zurücksetzen",
 
   controllerN: (n) => `Controller ${n}`,
-  queryingBattery: (n) => `Controller ${n}: frage Akku ab …`,
-  noResponse: (n) => `Controller ${n}: keine Antwort (aus oder nicht verbunden?)`,
-  batteryQueried: (n, level) => `Controller ${n}: Akku ${level}, soeben abgefragt`,
   turnOffTitle: (n) => `Controller ${n} ausschalten?`,
   turnOffText: "Der Controller geht aus und muss mit der Guide-Taste wieder eingeschaltet werden.",
   turnOffButton: "Ausschalten",
-  turnedOff: (n) => `Controller ${n}: ausgeschaltet`,
   turnOffUnconfirmed: (n) => `Controller ${n}: Befehl gesendet, keine Bestätigung (war evtl. schon aus)`,
   turnOffAllTitle: "Alle Controller ausschalten?",
   turnOffAllText: "Alle verbundenen Controller an allen Receivern gehen aus. Derselbe Ablauf wie beim Herunterfahren.",
   turnOffAllButton: "Alle ausschalten",
-  turningOffAll: "Schalte Controller aus …",
   turnOffAllProblem: (details) => `Problem beim Ausschalten: ${details}`,
-  noConnectedController: "Kein verbundener Controller gefunden",
-  turnedOffAll: (sent, confirmed) => `${sent} Controller ausgeschaltet (${confirmed} bestätigt)`,
 
   general: "Allgemein",
   groupMonitoring: "Überwachung",

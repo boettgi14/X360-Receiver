@@ -112,7 +112,7 @@ const TEXT = {
     setupFailed: "The service could not be set up: boom", fallbackError: "something technical",
     partial: "1 of 2 controllers turned off, error: slot 2 timed out", optionOff: "(The option is now off.)",
     installFailed: "The service is not set up: no systemd", runFailed: "ran at the last shutdown but failed: OSError: x",
-    find: "Find controller", found: "Controller 1: vibration sent", identify: "Identify",
+    find: "Find controller", found: "vibration sent", queriedNow: "queried just now", querying: "querying battery", identify: "Identify",
     rumbleUnavailable: "The controller cannot vibrate right now (no usable input device): denied",
     toggleStartup: "Query battery at start", toggleLow: "Warn when battery is low", languageLabel: "Language",
     toastTitle: "Controller battery low", toastBody: "Controller 2: battery level 0/3",
@@ -137,7 +137,7 @@ const TEXT = {
     setupFailed: "Der Dienst konnte nicht eingerichtet werden: boom", fallbackError: "something technical",
     partial: "1 von 2 Controllern ausgeschaltet, Fehler: slot 2 timed out", optionOff: "(Option ist jetzt aus.)",
     installFailed: "Der Dienst ist nicht eingerichtet: no systemd", runFailed: "lief beim letzten Herunterfahren, scheiterte aber: OSError: x",
-    find: "Controller finden", found: "Controller 1: Vibration gesendet", identify: "Erkennen",
+    find: "Controller finden", found: "Vibration gesendet", queriedNow: "soeben abgefragt", querying: "frage Akku ab", identify: "Erkennen",
     rumbleUnavailable: "Der Controller kann gerade nicht vibrieren (kein nutzbares Eingabegerät): denied",
     toggleStartup: "Akku beim Start abfragen", toggleLow: "Bei niedrigem Akku warnen", languageLabel: "Sprache",
     toastTitle: "Controller-Akku niedrig", toastBody: "Controller 2: Akkustufe 0/3",
@@ -224,6 +224,7 @@ async function runSuite(lang, languages) {
   await click(queryButton());
   await flush();
   assert.deepEqual(calls.filter((c) => c[0] === "query_battery"), [["query_battery", 1, 2, 0]]);
+  assert.ok(!plain().includes(T.queriedNow) && !plain().includes(T.querying), `${label} no message after a manual battery query`);
 
   // --- error codes from the backend are translated; details and unknown codes are handled
   answers.query_battery = { ok: false, error: "Another access to the receiver is already running.", code: "busy" };
@@ -281,7 +282,7 @@ async function runSuite(lang, languages) {
   assert.ok(plain().includes(T.identify) && findButton(), `${label} identify group in the open card`);
   await click(findButton()); await flush();
   assert.deepEqual(calls.filter((c) => c[0] === "find_controller"), [["find_controller", 1, 2, 0]]);
-  assert.ok(plain().includes(T.found), `${label} success message`);
+  assert.ok(!plain().includes(T.found), `${label} no success message in the panel (only failures are shown)`);
   answers.find_controller = { ok: false, error: "Cannot open x", code: "rumble_unavailable", detail: "denied" };
   await click(findButton()); await flush();
   assert.ok(plain().includes(T.rumbleUnavailable), `${label} rumble error translated`);

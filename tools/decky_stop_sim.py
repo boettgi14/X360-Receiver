@@ -9,11 +9,20 @@ This is a simulation, not Decky: it did NOT reproduce the hang seen on the devic
 plugin stops quickly in a clean environment and what the exit watchdog does when something keeps the process
 alive.
 
+What is simulated with SPIN: on the device (journal of 2026-11-07, Decky's source) the plugin process reads its
+socket in a loop that, after Decky closed its end, gets an empty read forever, creates a task per iteration and
+never lets the event loop run. Here that is a task that blocks the loop's thread in a loop.
+
 Usage:  python3 tools/decky_stop_sim.py <directory with main.py and py_modules/>
 Environment:  RUN_S=7        seconds the plugin runs before SIGTERM
               SETTINGS='{}'  contents of x360w.json
               STALL=thread   a non-daemon thread keeps the interpreter from exiting after the loop is closed
               STALL=disable  the monitor stop hangs forever
+              SPIN=before    Decky's socket reader spins (see below) BEFORE the plugin gets SIGTERM (a plain reload)
+              SPIN=during    the spin starts right after the shutdown task is created, i.e. as soon as `_unload`
+                             really suspends once (an uninstall)
+              SIGNALS=2      send SIGTERM this many times, 0.05 s apart (Decky's shutdown() ends the loop and calls
+                             sys.exit(0) at once when it is called a second time)
 """
 import asyncio
 import importlib.util
@@ -31,6 +40,8 @@ PLUGIN_DIR = sys.argv[1] if len(sys.argv) > 1 else "."
 SETTINGS = os.environ.get("SETTINGS", "{}")
 RUN_S = float(os.environ.get("RUN_S", "7"))
 STALL = os.environ.get("STALL", "")
+SIGNALS = int(os.environ.get("SIGNALS", "1"))
+SPIN = os.environ.get("SPIN", "")
 
 
 def child(settings_dir):
@@ -59,7 +70,19 @@ def child(settings_dir):
         asyncio.get_event_loop().call_soon_threadsafe(asyncio.get_event_loop().stop)
         sys.exit(0)
 
-    loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.ensure_future(shutdown()))
+    async def spin():
+        print("  child: [sim] Decky's socket reader starts spinning", flush=True)
+        while True:  # no await: the event loop's thread never gets back to the loop
+            asyncio.create_task(asyncio.sleep(0)).cancel()
+            time.sleep(0.001)
+
+    def on_sigterm():
+        asyncio.ensure_future(shutdown())
+        if SPIN == "during":
+            asyncio.ensure_future(spin())  # queued behind the shutdown task: runs once it suspends
+
+    loop.add_signal_handler(signal.SIGTERM, on_sigterm)
+    loop.add_signal_handler(signal.SIGUSR1, lambda: asyncio.ensure_future(spin()))
 
     async def frontend():
         # what the open panel does: get_status every 2 s, the notification poll every 10 s
@@ -101,8 +124,14 @@ if __name__ == "__main__":
         time.sleep(RUN_S)
         print(f"parent: SIGTERM after {RUN_S:g} s", flush=True)
         started = time.time()
-        proc.terminate()
-        while proc.is_alive() and time.time() - started < 5.5:
+        if SPIN == "before":
+            os.kill(proc.pid, signal.SIGUSR1)
+            time.sleep(0.05)
+        for number in range(SIGNALS):
+            if number:
+                time.sleep(0.05)
+            proc.terminate()
+        while proc.is_alive() and time.time() - started < 5.2:
             time.sleep(0.05)
         took = time.time() - started
         if proc.is_alive():
